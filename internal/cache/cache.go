@@ -46,10 +46,19 @@ func New(dir string) (*Cache, error) {
 		return nil, fmt.Errorf("cache: open database: %w", err)
 	}
 
-	// WAL mode for concurrent access.
+	// Serialize all DB access through a single connection.
+	// SQLite only supports one writer at a time; this avoids SQLITE_BUSY
+	// from Go's connection pool opening multiple connections.
+	db.SetMaxOpenConns(1)
+
+	// WAL mode for better read concurrency.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("cache: set WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cache: set busy timeout: %w", err)
 	}
 
 	if _, err := db.Exec(createPackagesTable); err != nil {
