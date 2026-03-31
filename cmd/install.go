@@ -42,7 +42,7 @@ func runInstall(ctx context.Context, verbose bool) error {
 	lockfilePath := "composer.lock"
 	lf, err := lockfile.Parse(lockfilePath)
 	if err != nil {
-		return fmt.Errorf("failed to read lockfile: %w", err)
+		return fmt.Errorf("failed to read %s: %w", lockfilePath, err)
 	}
 
 	allPackages := append(lf.Packages, lf.PackagesDev...)
@@ -73,7 +73,7 @@ func runInstall(ctx context.Context, verbose bool) error {
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
-			fmt.Fprintf(w, "  ERROR %s: %v\n", r.Package.Name, r.Err)
+			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
 			progress.Increment(r.Package.Name)
