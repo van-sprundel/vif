@@ -1,0 +1,17 @@
+{
+    "name": "test/bench",
+    "type": "project",
+    "authors": [
+        {
+            "name": "van-sprundel",
+            "email": "ramonvansprundel@gmail.com"
+        }
+    ],
+    "require": {
+        "symfony/console": "^8.0",
+        "symfony/http-foundation": "^8.0",
+        "monolog/monolog": "^3.10",
+        "guzzlehttp/guzzle": "^7.10",
+        "doctrine/dbal": "^4.4"
+    }
+}
