@@ -42,6 +42,11 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 
 	// Link each package from cache to vendor.
 	for _, p := range all {
+		// Skip path-type packages — they're local and not in the cache.
+		if p.Dist.Type == "path" {
+			continue
+		}
+
 		key := cache.CacheKey(p.Dist.URL)
 		src := inst.cache.ExtractedDir(key)
 		dst := filepath.Join(vendorDir, p.Name)
