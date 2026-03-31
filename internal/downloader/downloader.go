@@ -125,12 +125,12 @@ func (d *Downloader) fetch(ctx context.Context, url string) ([]byte, error) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d for %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
 	return io.ReadAll(resp.Body)

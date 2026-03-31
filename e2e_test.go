@@ -102,14 +102,12 @@ func newTestProject() testProject {
 	}
 }
 
-// serve is defined below with testing.TB signature for use in both tests and benchmarks.
-
 // writeLockfile writes a composer.lock file using the test server's URL.
-func (tp testProject) writeLockfile(t *testing.T, dir, serverURL string) {
-	t.Helper()
+func (tp testProject) writeLockfile(tb testing.TB, dir, serverURL string) {
+	tb.Helper()
 
 	toPkg := func(tp testPkg) pkg.Package {
-		p := pkg.Package{
+		return pkg.Package{
 			Name:    tp.name,
 			Version: tp.version,
 			Type:    "library",
@@ -122,12 +120,9 @@ func (tp testProject) writeLockfile(t *testing.T, dir, serverURL string) {
 				Files: tp.autoFiles,
 			},
 		}
-		return p
 	}
 
-	lf := lockfile.LockFile{
-		ContentHash: "e2etesthash",
-	}
+	lf := lockfile.LockFile{ContentHash: "e2etesthash"}
 	for _, p := range tp.packages {
 		lf.Packages = append(lf.Packages, toPkg(p))
 	}
@@ -137,10 +132,10 @@ func (tp testProject) writeLockfile(t *testing.T, dir, serverURL string) {
 
 	data, err := json.MarshalIndent(lf, "", "    ")
 	if err != nil {
-		t.Fatalf("marshal lockfile: %v", err)
+		tb.Fatalf("marshal lockfile: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), data, 0o644); err != nil {
-		t.Fatalf("write lockfile: %v", err)
+		tb.Fatalf("write lockfile: %v", err)
 	}
 }
 
@@ -305,7 +300,7 @@ func BenchmarkE2EColdInstall(b *testing.B) {
 	defer srv.Close()
 
 	for i := 0; i < b.N; i++ {
-		runFullInstall(b, project, srv.URL, true)
+		runFullInstall(b, project, srv.URL)
 	}
 }
 
@@ -315,7 +310,7 @@ func BenchmarkE2EWarmInstall(b *testing.B) {
 	defer srv.Close()
 
 	// Prime the cache once.
-	cacheDir := runFullInstall(b, project, srv.URL, false)
+	cacheDir := runFullInstall(b, project, srv.URL)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -324,11 +319,11 @@ func BenchmarkE2EWarmInstall(b *testing.B) {
 }
 
 // runFullInstall runs the complete install pipeline and returns the cache dir.
-func runFullInstall(tb testing.TB, project testProject, serverURL string, cleanup bool) string {
+func runFullInstall(tb testing.TB, project testProject, serverURL string) string {
 	tb.Helper()
 
 	projectDir := tb.TempDir()
-	project.writeLockfileB(tb, projectDir, serverURL)
+	project.writeLockfile(tb, projectDir, serverURL)
 
 	cacheDir := tb.TempDir()
 	c, err := cache.New(cacheDir)
@@ -367,7 +362,7 @@ func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cach
 	tb.Helper()
 
 	projectDir := tb.TempDir()
-	project.writeLockfileB(tb, projectDir, serverURL)
+	project.writeLockfile(tb, projectDir, serverURL)
 
 	c, err := cache.New(cacheDir)
 	if err != nil {
@@ -398,42 +393,6 @@ func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cach
 	}
 }
 
-// writeLockfileB is the benchmark-compatible variant.
-func (tp testProject) writeLockfileB(tb testing.TB, dir, serverURL string) {
-	tb.Helper()
-
-	toPkg := func(tp testPkg) pkg.Package {
-		return pkg.Package{
-			Name:    tp.name,
-			Version: tp.version,
-			Type:    "library",
-			Dist: pkg.Dist{
-				Type: "zip",
-				URL:  serverURL + "/" + tp.name + ".zip",
-			},
-			Autoload: pkg.Autoload{
-				PSR4:  map[string][]string{tp.namespace: {tp.srcDir}},
-				Files: tp.autoFiles,
-			},
-		}
-	}
-
-	lf := lockfile.LockFile{ContentHash: "e2etesthash"}
-	for _, p := range tp.packages {
-		lf.Packages = append(lf.Packages, toPkg(p))
-	}
-	for _, p := range tp.devPackages {
-		lf.PackagesDev = append(lf.PackagesDev, toPkg(p))
-	}
-
-	data, err := json.MarshalIndent(lf, "", "    ")
-	if err != nil {
-		tb.Fatalf("marshal lockfile: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "composer.lock"), data, 0o644); err != nil {
-		tb.Fatalf("write lockfile: %v", err)
-	}
-}
 
 func makeZipE2E(tb testing.TB, files map[string]string) []byte {
 	tb.Helper()
@@ -484,8 +443,8 @@ func BenchmarkComposerInstallWarm(b *testing.B) {
 
 	// Prime composer cache with one run.
 	primedDir := b.TempDir()
-	copyFile2(b, fixture, filepath.Join(primedDir, "composer.lock"))
-	copyFile2(b, composerJSON, filepath.Join(primedDir, "composer.json"))
+	copyTestFile(b, fixture, filepath.Join(primedDir, "composer.lock"))
+	copyTestFile(b, composerJSON, filepath.Join(primedDir, "composer.json"))
 	prime := exec.Command(composerBin, "install", "--no-scripts", "--no-plugins", "--no-interaction", "--ignore-platform-reqs")
 	prime.Dir = primedDir
 	prime.Env = append(os.Environ(), "COMPOSER_NO_AUDIT=1")
@@ -496,8 +455,8 @@ func BenchmarkComposerInstallWarm(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		dir := b.TempDir()
-		copyFile2(b, fixture, filepath.Join(dir, "composer.lock"))
-		copyFile2(b, composerJSON, filepath.Join(dir, "composer.json"))
+		copyTestFile(b, fixture, filepath.Join(dir, "composer.lock"))
+		copyTestFile(b, composerJSON, filepath.Join(dir, "composer.json"))
 
 		cmd := exec.Command(composerBin, "install", "--no-scripts", "--no-plugins", "--no-interaction", "--ignore-platform-reqs")
 		cmd.Dir = dir
@@ -523,7 +482,7 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		projectDir := b.TempDir()
-		copyFile2(b, fixture, filepath.Join(projectDir, "composer.lock"))
+		copyTestFile(b, fixture, filepath.Join(projectDir, "composer.lock"))
 
 		c, err := cache.New(cacheDir)
 		if err != nil {
@@ -564,7 +523,7 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 func primeVifInstall(tb testing.TB, fixturePath, cacheDir string) {
 	tb.Helper()
 	projectDir := tb.TempDir()
-	copyFile2(tb, fixturePath, filepath.Join(projectDir, "composer.lock"))
+	copyTestFile(tb, fixturePath, filepath.Join(projectDir, "composer.lock"))
 
 	c, err := cache.New(cacheDir)
 	if err != nil {
@@ -591,7 +550,7 @@ func primeVifInstall(tb testing.TB, fixturePath, cacheDir string) {
 	}
 }
 
-func copyFile2(tb testing.TB, src, dst string) {
+func copyTestFile(tb testing.TB, src, dst string) {
 	tb.Helper()
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -605,16 +564,7 @@ func copyFile2(tb testing.TB, src, dst string) {
 	}
 }
 
-// writeMinimalComposerJSON writes a minimal composer.json that satisfies `composer install`.
-func writeMinimalComposerJSON(tb testing.TB, dir string) {
-	tb.Helper()
-	content := []byte(`{"name":"test/project","type":"project","require":{}}`)
-	if err := os.WriteFile(filepath.Join(dir, "composer.json"), content, 0o644); err != nil {
-		tb.Fatalf("write composer.json: %v", err)
-	}
-}
-
-// serve for benchmarks.
+// serve starts an httptest server that serves zip archives for each package.
 func (tp testProject) serve(tb testing.TB) *httptest.Server {
 	tb.Helper()
 	zips := make(map[string][]byte)

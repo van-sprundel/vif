@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -10,11 +11,13 @@ import (
 // Progress tracks and displays progress for a multi-step operation.
 type Progress struct {
 	w       io.Writer
+	mu      sync.Mutex // guards writes to w in non-verbose mode
 	total   int
 	done    atomic.Int64
 	label   string
 	verbose bool
 	start   time.Time
+	dirty   bool // true if a \r line is currently displayed
 }
 
 // NewProgress creates a progress tracker writing to w.
@@ -33,17 +36,34 @@ func (p *Progress) Increment(name string) {
 	n := p.done.Add(1)
 	if p.verbose {
 		fmt.Fprintf(p.w, "  %s %s\n", p.label, name)
-	} else {
-		fmt.Fprintf(p.w, "\r%s [%d/%d]", p.label, n, p.total)
+		return
 	}
+	p.mu.Lock()
+	fmt.Fprintf(p.w, "\r\033[K%s [%d/%d]", p.label, n, p.total)
+	p.dirty = true
+	p.mu.Unlock()
+}
+
+// Error prints an error, clearing the progress line first if needed.
+func (p *Progress) Error(msg string) {
+	p.mu.Lock()
+	if p.dirty {
+		fmt.Fprint(p.w, "\r\033[K") // clear progress line
+	}
+	fmt.Fprintln(p.w, msg)
+	p.dirty = false
+	p.mu.Unlock()
 }
 
 // Finish prints the final summary line.
 func (p *Progress) Finish() {
 	elapsed := time.Since(p.start)
-	if !p.verbose {
+	p.mu.Lock()
+	if p.dirty {
 		fmt.Fprintln(p.w) // newline after \r progress
+		p.dirty = false
 	}
+	p.mu.Unlock()
 	fmt.Fprintf(p.w, "%s done (%d packages, %s)\n", p.label, p.total, formatDuration(elapsed))
 }
 
