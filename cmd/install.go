@@ -69,11 +69,14 @@ func runInstall(ctx context.Context, verbose bool) error {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	var cached, downloaded, failed int
+	var cached, downloaded, skipped, failed int
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
 			fmt.Fprintf(w, "  ERROR %s: %v\n", r.Package.Name, r.Err)
+		} else if r.Skipped {
+			skipped++
+			progress.Increment(r.Package.Name)
 		} else if r.FromCache {
 			cached++
 			progress.Increment(r.Package.Name)
@@ -88,7 +91,7 @@ func runInstall(ctx context.Context, verbose bool) error {
 		return fmt.Errorf("%d package(s) failed to download", failed)
 	}
 
-	fmt.Fprintf(w, "  %d downloaded, %d from cache\n", downloaded, cached)
+	fmt.Fprintf(w, "  %d downloaded, %d from cache, %d skipped (path)\n", downloaded, cached, skipped)
 
 	// 4. Install to vendor/.
 	vendorDir := filepath.Join(".", "vendor")

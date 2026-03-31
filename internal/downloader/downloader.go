@@ -21,6 +21,7 @@ import (
 type Result struct {
 	Package   pkg.Package
 	FromCache bool
+	Skipped   bool // true for path-type packages that don't need downloading
 	Err       error
 }
 
@@ -72,6 +73,11 @@ func (d *Downloader) Download(ctx context.Context, packages []pkg.Package) ([]Re
 }
 
 func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
+	// Skip path-type packages — they're local dependencies, not downloadable.
+	if p.Dist.Type == "path" {
+		return Result{Package: p, Skipped: true}
+	}
+
 	key := cache.CacheKey(p.Dist.URL)
 
 	// Check cache: both SQLite row and extracted directory on disk.
