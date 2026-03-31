@@ -4,13 +4,17 @@ package lockfile_test
 //! See: https://git.drupalcode.org/project/drupal/-/blob/main/composer.lock
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/resolver"
 )
 
 // fixtureFile returns the absolute path to testdata/fixtures/composer.lock
@@ -291,6 +295,160 @@ func writeTemp(t *testing.T, content string) string {
 		t.Fatalf("writeTemp: %v", err)
 	}
 	return path
+}
+
+func TestGenerate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "composer.lock")
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": "^1.0"},
+		RequireDev:       map[string]string{"acme/test": "^2.0"},
+		MinimumStability: "stable",
+		PreferStable:     true,
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "acme/foo",
+			Version: "1.5.0",
+			Entry: packagist.VersionEntry{
+				Name:    "acme/foo",
+				Version: "1.5.0",
+				Type:    "library",
+				Require: map[string]string{"acme/bar": "^1.0"},
+				Dist: packagist.DistEntry{
+					URL:       "https://example.com/acme/foo/1.5.0.zip",
+					Type:      "zip",
+					Reference: "abc123",
+				},
+			},
+			Dev: false,
+		},
+		{
+			Name:    "acme/bar",
+			Version: "1.2.0",
+			Entry: packagist.VersionEntry{
+				Name:    "acme/bar",
+				Version: "1.2.0",
+				Type:    "library",
+				Dist: packagist.DistEntry{
+					URL:       "https://example.com/acme/bar/1.2.0.zip",
+					Type:      "zip",
+					Reference: "def456",
+				},
+			},
+			Dev: false,
+		},
+		{
+			Name:    "acme/test",
+			Version: "2.0.0",
+			Entry: packagist.VersionEntry{
+				Name:    "acme/test",
+				Version: "2.0.0",
+				Type:    "library",
+				Dist: packagist.DistEntry{
+					URL:       "https://example.com/acme/test/2.0.0.zip",
+					Type:      "zip",
+					Reference: "ghi789",
+				},
+			},
+			Dev: true,
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Read back and verify.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var lf map[string]json.RawMessage
+	if err := json.Unmarshal(data, &lf); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// Check content-hash.
+	var hash string
+	json.Unmarshal(lf["content-hash"], &hash)
+	if len(hash) != 32 {
+		t.Errorf("content-hash length = %d, want 32", len(hash))
+	}
+
+	// Check packages count.
+	var packages []json.RawMessage
+	json.Unmarshal(lf["packages"], &packages)
+	if len(packages) != 2 {
+		t.Errorf("packages count = %d, want 2", len(packages))
+	}
+
+	// Check packages-dev count.
+	var packagesDev []json.RawMessage
+	json.Unmarshal(lf["packages-dev"], &packagesDev)
+	if len(packagesDev) != 1 {
+		t.Errorf("packages-dev count = %d, want 1", len(packagesDev))
+	}
+
+	// Check minimum-stability.
+	var minStab string
+	json.Unmarshal(lf["minimum-stability"], &minStab)
+	if minStab != "stable" {
+		t.Errorf("minimum-stability = %q, want stable", minStab)
+	}
+
+	// Check prefer-stable.
+	var preferStable bool
+	json.Unmarshal(lf["prefer-stable"], &preferStable)
+	if !preferStable {
+		t.Error("prefer-stable should be true")
+	}
+
+	// Check _readme exists.
+	if _, ok := lf["_readme"]; !ok {
+		t.Error("missing _readme field")
+	}
+
+	// Packages should be sorted alphabetically.
+	var pkgEntries []struct{ Name string }
+	json.Unmarshal(lf["packages"], &pkgEntries)
+	if len(pkgEntries) == 2 && pkgEntries[0].Name != "acme/bar" {
+		t.Errorf("packages not sorted: first = %q, want acme/bar", pkgEntries[0].Name)
+	}
+}
+
+func TestGenerateEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "composer.lock")
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/empty",
+		MinimumStability: "stable",
+	}
+
+	if err := lockfile.Generate(path, nil, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var lf map[string]json.RawMessage
+	json.Unmarshal(data, &lf)
+
+	// Empty packages should be [] not null.
+	if string(lf["packages"]) != "[]" {
+		t.Errorf("packages = %s, want []", lf["packages"])
+	}
+	if string(lf["packages-dev"]) != "[]" {
+		t.Errorf("packages-dev = %s, want []", lf["packages-dev"])
+	}
 }
 
 func BenchmarkParse(b *testing.B) {
