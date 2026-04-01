@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/van-sprundel/vif/internal/pkg"
 )
 
 // APIResponse is the top-level Packagist p2 response.
@@ -45,23 +47,12 @@ type DistEntry struct {
 func (v VersionEntry) NonPlatformRequire() map[string]string {
 	out := make(map[string]string, len(v.Require))
 	for name, constraint := range v.Require {
-		if isPlatformPackage(name) {
+		if pkg.IsPlatformPackage(name) {
 			continue
 		}
 		out[name] = constraint
 	}
 	return out
-}
-
-func isPlatformPackage(name string) bool {
-	return name == "php" ||
-		strings.HasPrefix(name, "ext-") ||
-		strings.HasPrefix(name, "lib-") ||
-		name == "php-64bit" ||
-		name == "php-ipv6" ||
-		name == "hhvm" ||
-		name == "composer-plugin-api" ||
-		name == "composer-runtime-api"
 }
 
 // cacheEntry stores a cached API response with its ETag.

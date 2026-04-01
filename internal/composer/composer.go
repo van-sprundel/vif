@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/van-sprundel/vif/internal/pkg"
 )
 
 // ComposerJSON represents a parsed composer.json file.
@@ -61,23 +63,12 @@ func (cj *ComposerJSON) NonPlatformRequireDev() map[string]string {
 func filterPlatform(deps map[string]string) map[string]string {
 	out := make(map[string]string, len(deps))
 	for name, constraint := range deps {
-		if isPlatformPackage(name) {
+		if pkg.IsPlatformPackage(name) {
 			continue
 		}
 		out[name] = constraint
 	}
 	return out
-}
-
-func isPlatformPackage(name string) bool {
-	return name == "php" ||
-		strings.HasPrefix(name, "ext-") ||
-		strings.HasPrefix(name, "lib-") ||
-		name == "php-64bit" ||
-		name == "php-ipv6" ||
-		name == "hhvm" ||
-		name == "composer-plugin-api" ||
-		name == "composer-runtime-api"
 }
 
 // contentHashKeys are the composer.json keys that Composer includes in its content-hash.
