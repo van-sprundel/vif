@@ -19,10 +19,15 @@ type ComposerJSON struct {
 	RequireDev       map[string]string `json:"require-dev"`
 	MinimumStability string            `json:"minimum-stability"`
 	PreferStable     bool              `json:"prefer-stable"`
-	Config           json.RawMessage   `json:"config"`
+	Config           composerConfig    `json:"config"`
 
 	// raw holds the original decoded JSON for content-hash computation.
 	raw map[string]json.RawMessage
+}
+
+// composerConfig holds the config section of composer.json.
+type composerConfig struct {
+	OptimizeAutoloader bool `json:"optimize-autoloader"`
 }
 
 // Parse reads and parses a composer.json file at the given path.

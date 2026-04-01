@@ -25,7 +25,7 @@ func TestGenerateCreatesAllFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "testhash123"); err != nil {
+	if err := Generate(vendorDir, packages, "testhash123", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -51,7 +51,7 @@ func TestGenerateCreatesAllFiles(t *testing.T) {
 func TestGenerateAutoloadPHP(t *testing.T) {
 	vendorDir := t.TempDir()
 
-	if err := Generate(vendorDir, nil, "abc123"); err != nil {
+	if err := Generate(vendorDir, nil, "abc123", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestGeneratePSR4(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h1"); err != nil {
+	if err := Generate(vendorDir, packages, "h1", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestGeneratePSR0(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h2"); err != nil {
+	if err := Generate(vendorDir, packages, "h2", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestGenerateFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h3"); err != nil {
+	if err := Generate(vendorDir, packages, "h3", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestGenerateNoFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h4"); err != nil {
+	if err := Generate(vendorDir, packages, "h4", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -244,7 +244,7 @@ class Thing {}
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h5"); err != nil {
+	if err := Generate(vendorDir, packages, "h5", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -288,7 +288,7 @@ class Widget {}
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h7"); err != nil {
+	if err := Generate(vendorDir, packages, "h7", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -306,7 +306,7 @@ class Widget {}
 func TestGenerateClassLoaderEmbedded(t *testing.T) {
 	vendorDir := t.TempDir()
 
-	if err := Generate(vendorDir, nil, "h6"); err != nil {
+	if err := Generate(vendorDir, nil, "h6", false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func BenchmarkGenerate(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		vendorDir := filepath.Join(b.TempDir(), "vendor")
-		if err := Generate(vendorDir, packages, "benchhash"); err != nil {
+		if err := Generate(vendorDir, packages, "benchhash", false); err != nil {
 			b.Fatalf("Generate: %v", err)
 		}
 	}
