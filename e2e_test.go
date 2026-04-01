@@ -58,10 +58,10 @@ func newTestProject() testProject {
 				namespace: `Acme\Logger\`,
 				srcDir:    "src/",
 				files: map[string]string{
-					"src/Logger.php":          "<?php\nnamespace Acme\\Logger;\nclass Logger {}",
-					"src/NullLogger.php":      "<?php\nnamespace Acme\\Logger;\nclass NullLogger {}",
-					"src/helpers.php":         "<?php\nfunction acme_log() {}",
-					"composer.json":           `{"name":"acme/logger"}`,
+					"src/Logger.php":     "<?php\nnamespace Acme\\Logger;\nclass Logger {}",
+					"src/NullLogger.php": "<?php\nnamespace Acme\\Logger;\nclass NullLogger {}",
+					"src/helpers.php":    "<?php\nfunction acme_log() {}",
+					"composer.json":      `{"name":"acme/logger"}`,
 				},
 				autoFiles: []string{"src/helpers.php"},
 			},
@@ -71,9 +71,9 @@ func newTestProject() testProject {
 				namespace: `Acme\Config\`,
 				srcDir:    "src/",
 				files: map[string]string{
-					"src/Config.php":    "<?php\nnamespace Acme\\Config;\nclass Config {}",
-					"src/Loader.php":    "<?php\nnamespace Acme\\Config;\nclass Loader {}",
-					"composer.json":     `{"name":"acme/config"}`,
+					"src/Config.php": "<?php\nnamespace Acme\\Config;\nclass Config {}",
+					"src/Loader.php": "<?php\nnamespace Acme\\Config;\nclass Loader {}",
+					"composer.json":  `{"name":"acme/config"}`,
 				},
 			},
 		},
@@ -94,8 +94,8 @@ func newTestProject() testProject {
 				namespace: `Acme\Mock\`,
 				srcDir:    "src/",
 				files: map[string]string{
-					"src/Mock.php":   "<?php\nnamespace Acme\\Mock;\nclass Mock {}",
-					"composer.json":  `{"name":"acme/mock"}`,
+					"src/Mock.php":  "<?php\nnamespace Acme\\Mock;\nclass Mock {}",
+					"composer.json": `{"name":"acme/mock"}`,
 				},
 			},
 		},
@@ -392,7 +392,6 @@ func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cach
 		tb.Fatalf("autoload: %v", err)
 	}
 }
-
 
 func makeZipE2E(tb testing.TB, files map[string]string) []byte {
 	tb.Helper()

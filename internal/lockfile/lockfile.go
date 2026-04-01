@@ -36,14 +36,14 @@ type lockFileOut struct {
 
 // lockPkgEntry is a single package entry in composer.lock.
 type lockPkgEntry struct {
-	Name       string            `json:"name"`
-	Version    string            `json:"version"`
+	Name       string              `json:"name"`
+	Version    string              `json:"version"`
 	Dist       packagist.DistEntry `json:"dist"`
-	Require    map[string]string `json:"require,omitempty"`
-	RequireDev map[string]string `json:"require-dev,omitempty"`
-	Type       string            `json:"type,omitempty"`
-	Autoload   json.RawMessage   `json:"autoload,omitempty"`
-	Time       string            `json:"time,omitempty"`
+	Require    map[string]string   `json:"require,omitempty"`
+	RequireDev map[string]string   `json:"require-dev,omitempty"`
+	Type       string              `json:"type,omitempty"`
+	Autoload   json.RawMessage     `json:"autoload,omitempty"`
+	Time       string              `json:"time,omitempty"`
 }
 
 // Parse reads the composer.lock file at path and returns a parsed LockFile.

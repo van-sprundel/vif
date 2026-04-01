@@ -367,8 +367,8 @@ func makeZipWithPrefix(t *testing.T, prefix string, files map[string]string) []b
 func TestDownloadStripsTopLevelPrefix(t *testing.T) {
 	// Simulate a packagist-style zip with a top-level "vendor-foo-abc123/" wrapper.
 	zipData := makeZipWithPrefix(t, "vendor-foo-abc123/", map[string]string{
-		"src/Foo.php":     "<?php class Foo {}",
-		"composer.json":   `{"name":"vendor/foo"}`,
+		"src/Foo.php":   "<?php class Foo {}",
+		"composer.json": `{"name":"vendor/foo"}`,
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
