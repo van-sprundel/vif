@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/van-sprundel/vif/internal/pkg"
 )
@@ -29,9 +30,12 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 	psr0 := make(map[string][]string)   // namespace -> list of dirs
 	classmap := make(map[string]string) // FQCN -> relative file path
 	var files []fileEntry               // deterministic-keyed file entries
+	scanInputs := make([]packageScanInput, 0, len(packages))
 
 	for _, p := range packages {
 		pkgDir := p.Name // relative to vendor/
+		pkgPath := filepath.Join(vendorDir, pkgDir)
+		excludes := p.Autoload.ExcludeFromClassmap
 
 		// PSR-4
 		for ns, paths := range p.Autoload.PSR4 {
@@ -49,45 +53,15 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 			}
 		}
 
-		// Classmap — always compute pkgPath so PSR-4/PSR-0 scanning can use it too.
-		pkgPath := filepath.Join(vendorDir, pkgDir)
-		excludes := p.Autoload.ExcludeFromClassmap
-
-		if len(p.Autoload.Classmap) > 0 {
-			scanned, err := ScanClassmap(pkgPath, p.Autoload.Classmap, excludes)
-			if err != nil {
-				return fmt.Errorf("autoload: classmap scan %s: %w", p.Name, err)
-			}
-			for fqcn, relPath := range scanned {
-				classmap[fqcn] = filepath.Join(pkgDir, relPath)
-			}
-		}
-
-		// PSR-4: scan each mapped directory for class declarations.
-		for _, paths := range p.Autoload.PSR4 {
-			for _, path := range paths {
-				scanned, err := ScanClassmap(pkgPath, []string{path}, excludes)
-				if err != nil {
-					return fmt.Errorf("autoload: psr-4 classmap scan %s: %w", p.Name, err)
-				}
-				for fqcn, relPath := range scanned {
-					classmap[fqcn] = filepath.Join(pkgDir, relPath)
-				}
-			}
-		}
-
-		// PSR-0: scan each mapped directory for class declarations.
-		for _, paths := range p.Autoload.PSR0 {
-			for _, path := range paths {
-				scanned, err := ScanClassmap(pkgPath, []string{path}, excludes)
-				if err != nil {
-					return fmt.Errorf("autoload: psr-0 classmap scan %s: %w", p.Name, err)
-				}
-				for fqcn, relPath := range scanned {
-					classmap[fqcn] = filepath.Join(pkgDir, relPath)
-				}
-			}
-		}
+		scanInputs = append(scanInputs, packageScanInput{
+			name:     p.Name,
+			pkgDir:   pkgDir,
+			pkgPath:  pkgPath,
+			classmap: append([]string(nil), p.Autoload.Classmap...),
+			psr4:     flattenAutoloadPaths(p.Autoload.PSR4),
+			psr0:     flattenAutoloadPaths(p.Autoload.PSR0),
+			excludes: append([]string(nil), excludes...),
+		})
 
 		// Files
 		for _, f := range p.Autoload.Files {
@@ -96,6 +70,16 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 				key:  key,
 				path: filepath.Join(pkgDir, f),
 			})
+		}
+	}
+
+	scannedClassmaps, err := scanPackageClassmaps(scanInputs)
+	if err != nil {
+		return err
+	}
+	for _, scanned := range scannedClassmaps {
+		for fqcn, path := range scanned {
+			classmap[fqcn] = path
 		}
 	}
 
@@ -133,9 +117,101 @@ type fileEntry struct {
 	path string
 }
 
+type packageScanInput struct {
+	name     string
+	pkgDir   string
+	pkgPath  string
+	classmap []string
+	psr4     []string
+	psr0     []string
+	excludes []string
+}
+
+type packageScanResult struct {
+	index    int
+	classmap map[string]string
+	err      error
+}
+
 // fileHash returns the md5 hex of "packageName:filePath", matching Composer's behavior.
 func fileHash(packageName, filePath string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(packageName+":"+filePath)))
+}
+
+func flattenAutoloadPaths(m map[string][]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	var paths []string
+	for _, entries := range m {
+		paths = append(paths, entries...)
+	}
+	return paths
+}
+
+func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, error) {
+	results := make([]map[string]string, len(inputs))
+	if len(inputs) == 0 {
+		return results, nil
+	}
+
+	ch := make(chan packageScanResult, len(inputs))
+	var wg sync.WaitGroup
+	for i, input := range inputs {
+		wg.Add(1)
+		go func(index int, input packageScanInput) {
+			defer wg.Done()
+			scanned, err := scanPackageClassmap(input)
+			ch <- packageScanResult{
+				index:    index,
+				classmap: scanned,
+				err:      err,
+			}
+		}(i, input)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	for result := range ch {
+		if result.err != nil {
+			return nil, result.err
+		}
+		results[result.index] = result.classmap
+	}
+
+	return results, nil
+}
+
+func scanPackageClassmap(input packageScanInput) (map[string]string, error) {
+	classmap := make(map[string]string)
+
+	addEntries := func(label string, entries []string) error {
+		if len(entries) == 0 {
+			return nil
+		}
+		scanned, err := ScanClassmap(input.pkgPath, entries, input.excludes)
+		if err != nil {
+			return fmt.Errorf("autoload: %s scan %s: %w", label, input.name, err)
+		}
+		for fqcn, relPath := range scanned {
+			classmap[fqcn] = filepath.Join(input.pkgDir, relPath)
+		}
+		return nil
+	}
+
+	if err := addEntries("classmap", input.classmap); err != nil {
+		return nil, err
+	}
+	if err := addEntries("psr-4 classmap", input.psr4); err != nil {
+		return nil, err
+	}
+	if err := addEntries("psr-0 classmap", input.psr0); err != nil {
+		return nil, err
+	}
+
+	return classmap, nil
 }
 
 // --- Simple return-array files ---

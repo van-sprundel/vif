@@ -3,9 +3,7 @@ package autoload
 import (
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"unicode"
 )
 
 // ScanClassmap scans directories and files for PHP class declarations.
@@ -106,24 +104,24 @@ func scanFile(baseDir, path string, classmap map[string]string) error {
 }
 
 type phpParser struct {
-	src                    []rune
+	src                    []byte
 	pos                    int
 	namespace              string
 	bracketedNamespaceEnds []int
-	prevSignificant        string
+	prevSignificant        phpTokenKind
 	declarations           []string
 }
 
 func findPHPDeclarations(src string) []string {
-	p := phpParser{src: []rune(src)}
+	p := phpParser{src: []byte(src)}
 	for {
-		tok, ok := p.nextToken()
-		if !ok {
+		tok := p.nextToken()
+		if tok.kind == phpTokenEOF {
 			return p.declarations
 		}
 
-		switch tok {
-		case "{":
+		switch tok.kind {
+		case phpTokenLBrace:
 			for len(p.bracketedNamespaceEnds) > 0 {
 				last := len(p.bracketedNamespaceEnds) - 1
 				p.bracketedNamespaceEnds[last]++
@@ -131,7 +129,7 @@ func findPHPDeclarations(src string) []string {
 					break
 				}
 			}
-		case "}":
+		case phpTokenRBrace:
 			if len(p.bracketedNamespaceEnds) > 0 {
 				last := len(p.bracketedNamespaceEnds) - 1
 				p.bracketedNamespaceEnds[last]--
@@ -142,14 +140,14 @@ func findPHPDeclarations(src string) []string {
 					}
 				}
 			}
-		case "namespace":
+		case phpTokenNamespace:
 			p.parseNamespace()
-		case "class", "interface", "trait", "enum":
-			p.parseDeclaration(tok)
+		case phpTokenClass, phpTokenInterface, phpTokenTrait, phpTokenEnum:
+			p.parseDeclaration(tok.kind)
 		}
 
-		if isSignificantToken(tok) {
-			p.prevSignificant = tok
+		if tok.significant {
+			p.prevSignificant = tok.kind
 		}
 	}
 }
@@ -157,34 +155,37 @@ func findPHPDeclarations(src string) []string {
 func (p *phpParser) parseNamespace() {
 	var parts []string
 	for {
-		tok, ok := p.nextToken()
-		if !ok {
+		tok := p.nextToken()
+		if tok.kind == phpTokenEOF {
 			break
 		}
-		switch tok {
-		case "{":
+		switch tok.kind {
+		case phpTokenLBrace:
 			p.namespace = strings.Join(parts, "")
 			p.bracketedNamespaceEnds = append(p.bracketedNamespaceEnds, 1)
 			return
-		case ";":
+		case phpTokenSemicolon:
 			p.namespace = strings.Join(parts, "")
 			p.bracketedNamespaceEnds = nil
 			return
 		default:
-			if tok == `\` || isIdentifier(tok) {
-				parts = append(parts, tok)
+			if tok.kind == phpTokenBackslash {
+				parts = append(parts, `\`)
+			}
+			if tok.kind == phpTokenIdentifier {
+				parts = append(parts, tok.text)
 			}
 		}
 	}
 }
 
-func (p *phpParser) parseDeclaration(kind string) {
-	if kind == "class" && p.prevSignificant == "new" {
+func (p *phpParser) parseDeclaration(kind phpTokenKind) {
+	if kind == phpTokenClass && p.prevSignificant == phpTokenNew {
 		return
 	}
 
-	name, ok := p.nextIdentifier()
-	if !ok {
+	name := p.nextIdentifier()
+	if name == "" {
 		return
 	}
 
@@ -194,27 +195,27 @@ func (p *phpParser) parseDeclaration(kind string) {
 	p.declarations = append(p.declarations, name)
 }
 
-func (p *phpParser) nextIdentifier() (string, bool) {
+func (p *phpParser) nextIdentifier() string {
 	for {
-		tok, ok := p.nextToken()
-		if !ok {
-			return "", false
+		tok := p.nextToken()
+		if tok.kind == phpTokenEOF {
+			return ""
 		}
-		if isIdentifier(tok) {
-			return tok, true
+		if tok.kind == phpTokenIdentifier {
+			return tok.text
 		}
-		switch tok {
-		case "{", "}", "(", ")", ";":
-			return "", false
+		switch tok.kind {
+		case phpTokenLBrace, phpTokenRBrace, phpTokenLParen, phpTokenRParen, phpTokenSemicolon:
+			return ""
 		}
 	}
 }
 
-func (p *phpParser) nextToken() (string, bool) {
+func (p *phpParser) nextToken() phpToken {
 	for p.pos < len(p.src) {
 		r := p.src[p.pos]
 
-		if unicode.IsSpace(r) {
+		if isSpace(r) {
 			p.pos++
 			continue
 		}
@@ -250,22 +251,39 @@ func (p *phpParser) nextToken() (string, bool) {
 			for p.pos < len(p.src) && isIdentifierPart(p.src[p.pos]) {
 				p.pos++
 			}
-			return string(p.src[start:p.pos]), true
+			return classifyIdentifier(p.src[start:p.pos])
 		}
 
 		p.pos++
-		return string(r), true
+		switch r {
+		case '\\':
+			return phpToken{kind: phpTokenBackslash}
+		case '{':
+			return phpToken{kind: phpTokenLBrace}
+		case '}':
+			return phpToken{kind: phpTokenRBrace}
+		case '(':
+			return phpToken{kind: phpTokenLParen}
+		case ')':
+			return phpToken{kind: phpTokenRParen}
+		case ';':
+			return phpToken{kind: phpTokenSemicolon}
+		case ':', '=', ',', '[', ']':
+			return phpToken{kind: phpTokenOther}
+		default:
+			return phpToken{kind: phpTokenOther, significant: true}
+		}
 	}
 
-	return "", false
+	return phpToken{kind: phpTokenEOF}
 }
 
 func (p *phpParser) match(s string) bool {
 	if p.pos+len(s) > len(p.src) {
 		return false
 	}
-	for i, want := range s {
-		if p.src[p.pos+i] != want {
+	for i := 0; i < len(s); i++ {
+		if p.src[p.pos+i] != s[i] {
 			return false
 		}
 	}
@@ -289,12 +307,15 @@ func (p *phpParser) skipBlockComment() {
 	}
 }
 
-func (p *phpParser) skipQuoted(quote rune) {
+func (p *phpParser) skipQuoted(quote byte) {
 	p.pos++
 	for p.pos < len(p.src) {
 		switch p.src[p.pos] {
 		case '\\':
-			p.pos += 2
+			p.pos++
+			if p.pos < len(p.src) {
+				p.pos++
+			}
 		case quote:
 			p.pos++
 			return
@@ -306,11 +327,11 @@ func (p *phpParser) skipQuoted(quote rune) {
 
 func (p *phpParser) skipHeredoc() {
 	p.pos += 3
-	for p.pos < len(p.src) && unicode.IsSpace(p.src[p.pos]) && p.src[p.pos] != '\n' {
+	for p.pos < len(p.src) && isInlineSpace(p.src[p.pos]) {
 		p.pos++
 	}
 
-	quote := rune(0)
+	quote := byte(0)
 	if p.pos < len(p.src) && (p.src[p.pos] == '\'' || p.src[p.pos] == '"') {
 		quote = p.src[p.pos]
 		p.pos++
@@ -341,7 +362,7 @@ func (p *phpParser) skipHeredoc() {
 		for p.pos < len(p.src) && p.src[p.pos] != '\n' {
 			p.pos++
 		}
-		line := strings.TrimSpace(string(p.src[lineStart:p.pos]))
+		line := trimASCIISpace(p.src[lineStart:p.pos])
 		if line == label || line == label+";" {
 			if p.pos < len(p.src) {
 				p.pos++
@@ -354,28 +375,96 @@ func (p *phpParser) skipHeredoc() {
 	}
 }
 
-func isIdentifierStart(r rune) bool {
-	return r == '_' || unicode.IsLetter(r)
+type phpTokenKind uint8
+
+const (
+	phpTokenEOF phpTokenKind = iota
+	phpTokenIdentifier
+	phpTokenNamespace
+	phpTokenClass
+	phpTokenInterface
+	phpTokenTrait
+	phpTokenEnum
+	phpTokenNew
+	phpTokenBackslash
+	phpTokenLBrace
+	phpTokenRBrace
+	phpTokenLParen
+	phpTokenRParen
+	phpTokenSemicolon
+	phpTokenOther
+)
+
+type phpToken struct {
+	kind        phpTokenKind
+	text        string
+	significant bool
 }
 
-func isIdentifierPart(r rune) bool {
-	return isIdentifierStart(r) || unicode.IsDigit(r)
-}
-
-func isIdentifier(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	return slices.IndexFunc([]rune(tok), func(r rune) bool {
-		return !isIdentifierPart(r)
-	}) == -1
-}
-
-func isSignificantToken(tok string) bool {
-	switch tok {
-	case "", `\`, "{", "}", "(", ")", ";", ",", ":", "=":
-		return false
+func classifyIdentifier(raw []byte) phpToken {
+	switch {
+	case equalFoldASCII(raw, "namespace"):
+		return phpToken{kind: phpTokenNamespace, significant: true}
+	case equalFoldASCII(raw, "class"):
+		return phpToken{kind: phpTokenClass, significant: true}
+	case equalFoldASCII(raw, "interface"):
+		return phpToken{kind: phpTokenInterface, significant: true}
+	case equalFoldASCII(raw, "trait"):
+		return phpToken{kind: phpTokenTrait, significant: true}
+	case equalFoldASCII(raw, "enum"):
+		return phpToken{kind: phpTokenEnum, significant: true}
+	case equalFoldASCII(raw, "new"):
+		return phpToken{kind: phpTokenNew, significant: true}
 	default:
-		return true
+		return phpToken{kind: phpTokenIdentifier, text: string(raw), significant: true}
 	}
+}
+
+func equalFoldASCII(got []byte, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		b := got[i]
+		if 'A' <= b && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if b != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func isIdentifierStart(b byte) bool {
+	return b == '_' || ('A' <= b && b <= 'Z') || ('a' <= b && b <= 'z') || b >= 0x80
+}
+
+func isIdentifierPart(b byte) bool {
+	return isIdentifierStart(b) || ('0' <= b && b <= '9')
+}
+
+func isSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
+}
+
+func isInlineSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r'
+}
+
+func trimASCIISpace(b []byte) string {
+	start := 0
+	for start < len(b) && isSpace(b[start]) {
+		start++
+	}
+	end := len(b)
+	for end > start && isSpace(b[end-1]) {
+		end--
+	}
+	return string(b[start:end])
 }
