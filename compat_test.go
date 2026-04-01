@@ -18,6 +18,7 @@ import (
 
 	"github.com/van-sprundel/vif/internal/autoload"
 	"github.com/van-sprundel/vif/internal/cache"
+	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
@@ -156,6 +157,12 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("parse lockfile: %w", err)
 	}
 
+	// Check composer.json for optimize-autoloader config.
+	optimized := false
+	if cj, err := composer.Parse(filepath.Join(dir, "composer.json")); err == nil {
+		optimized = cj.Config.OptimizeAutoloader
+	}
+
 	allPackages := append(lf.Packages, lf.PackagesDev...)
 
 	c, err := cache.New(cacheDir)
@@ -181,7 +188,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized); err != nil {
 		return "", fmt.Errorf("autoload.Generate: %w", err)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/van-sprundel/vif/internal/autoload"
 	"github.com/van-sprundel/vif/internal/cache"
+	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
@@ -103,8 +104,13 @@ func runInstall(ctx context.Context, verbose bool) error {
 	}
 
 	// 5. Generate autoloader.
+	// Check composer.json for optimize-autoloader config.
+	optimized := false
+	if cj, err := composer.Parse("composer.json"); err == nil {
+		optimized = cj.Config.OptimizeAutoloader
+	}
 	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized); err != nil {
 		return fmt.Errorf("autoload: %w", err)
 	}
 	fmt.Fprintln(w, " done")
