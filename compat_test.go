@@ -496,6 +496,10 @@ func TestCompat(t *testing.T) {
 				t.Errorf("files present in composer vendor but missing from vif (%d):\n  %s",
 					len(result.missingFiles), strings.Join(result.missingFiles, "\n  "))
 			}
+			if len(result.extraFiles) > 0 {
+				t.Logf("files present in vif vendor but not in composer (%d):\n  %s",
+					len(result.extraFiles), strings.Join(result.extraFiles, "\n  "))
+			}
 			if len(result.contentMismatches) > 0 {
 				t.Errorf("autoloader content mismatches (%d):\n%s",
 					len(result.contentMismatches), strings.Join(result.contentMismatches, "\n"))
