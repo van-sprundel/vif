@@ -23,6 +23,7 @@ type VersionEntry struct {
 	Version           string            `json:"version"`
 	VersionNormalized string            `json:"version_normalized"`
 	Type              string            `json:"type"`
+	Bin               []string          `json:"bin"`
 	Require           map[string]string `json:"require"`
 	RequireDev        map[string]string `json:"require-dev"`
 	Provide           map[string]string `json:"provide"`
