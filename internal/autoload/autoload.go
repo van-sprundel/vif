@@ -66,6 +66,7 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 			input.psr4 = flattenAutoloadPaths(p.Autoload.PSR4)
 			input.psr0 = flattenAutoloadPaths(p.Autoload.PSR0)
 			input.psr4Namespaces = p.Autoload.PSR4
+			input.psr0Namespaces = p.Autoload.PSR0
 		}
 		scanInputs = append(scanInputs, input)
 
@@ -148,6 +149,7 @@ type packageScanInput struct {
 	psr4           []string            // only populated in optimized mode
 	psr0           []string            // only populated in optimized mode
 	psr4Namespaces map[string][]string // namespace -> dirs, for filtering in optimized mode
+	psr0Namespaces map[string][]string // namespace -> dirs, for filtering in optimized mode
 	excludes       []string
 }
 
@@ -183,24 +185,80 @@ func matchesPsr4(fqcn, filePath, pkgDir string, psr4 map[string][]string) bool {
 	}
 	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
 
+	inPsr4Dir := false
 	for _, nsPrefix := range prefixes {
-		if !strings.HasPrefix(fqcn, nsPrefix) {
-			continue
-		}
 		dirs := psr4[nsPrefix]
 		for _, dir := range dirs {
-			psr4Dir := filepath.Join(pkgDir, dir)
+			// Use trailing separator so "src/Server/" doesn't match "src/Server.php".
+			psr4Dir := filepath.Join(pkgDir, dir) + string(filepath.Separator)
 			if !strings.HasPrefix(filePath, psr4Dir) {
+				continue
+			}
+			inPsr4Dir = true
+			if !strings.HasPrefix(fqcn, nsPrefix) {
+				// Namespace doesn't match, but another prefix might map to the same dir.
 				continue
 			}
 			// Check that the relative class name maps to the relative file path.
 			relClass := strings.TrimPrefix(fqcn, nsPrefix)
 			expectedRelPath := strings.ReplaceAll(relClass, `\`, string(filepath.Separator)) + ".php"
 			expectedPath := filepath.Join(psr4Dir, expectedRelPath)
-			return filePath == expectedPath
+			if filePath == expectedPath {
+				return true
+			}
 		}
 	}
-	// Class doesn't match any PSR-4 namespace — shouldn't happen but include it.
+	if inPsr4Dir {
+		// File is in a PSR-4 directory but no namespace/path combo matched.
+		return false
+	}
+	return true
+}
+
+// matchesPsr0 checks whether a class FQCN matches its file path according to
+// PSR-0 naming rules. Returns true if the class should be included in the classmap.
+func matchesPsr0(fqcn, filePath, pkgDir string, psr0 map[string][]string) bool {
+	prefixes := make([]string, 0, len(psr0))
+	for ns := range psr0 {
+		prefixes = append(prefixes, ns)
+	}
+	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+
+	inPsr0Dir := false
+	for _, nsPrefix := range prefixes {
+		dirs := psr0[nsPrefix]
+		for _, dir := range dirs {
+			psr0Dir := filepath.Join(pkgDir, dir) + string(filepath.Separator)
+			if !strings.HasPrefix(filePath, psr0Dir) {
+				continue
+			}
+			inPsr0Dir = true
+			// For PSR-0, the prefix can be a namespace (with \) or a class prefix (with _).
+			// Check if FQCN starts with the prefix.
+			nsTrimmed := strings.TrimRight(nsPrefix, `\_`)
+			if nsTrimmed != "" && !strings.HasPrefix(fqcn, nsTrimmed) {
+				continue
+			}
+			// PSR-0 path: replace \ with /, then _ in class name with /.
+			// For namespaced classes: only underscores after last \ become separators.
+			classPath := fqcn
+			if idx := strings.LastIndex(classPath, `\`); idx >= 0 {
+				ns := strings.ReplaceAll(classPath[:idx], `\`, string(filepath.Separator))
+				className := strings.ReplaceAll(classPath[idx+1:], "_", string(filepath.Separator))
+				classPath = ns + string(filepath.Separator) + className
+			} else {
+				// No namespace — all underscores become separators.
+				classPath = strings.ReplaceAll(classPath, "_", string(filepath.Separator))
+			}
+			expectedPath := filepath.Join(psr0Dir, classPath+".php")
+			if filePath == expectedPath {
+				return true
+			}
+		}
+	}
+	if inPsr0Dir {
+		return false
+	}
 	return true
 }
 
@@ -352,8 +410,20 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 			}
 		}
 	}
-	if err := scanAndAdd("psr-0 classmap", input.psr0); err != nil {
-		return nil, packageScanStats{}, err
+	// PSR-0 scanning with namespace-to-filepath filtering.
+	if len(input.psr0) > 0 {
+		scanned, scanStats, err := scanClassmapWithStats(input.pkgPath, input.psr0, input.excludes)
+		if err != nil {
+			return nil, packageScanStats{}, err
+		}
+		stats.files += scanStats.Files
+		stats.symbols += scanStats.Symbols
+		for fqcn, relPath := range scanned {
+			fullPath := filepath.Join(input.pkgDir, relPath)
+			if matchesPsr0(fqcn, fullPath, input.pkgDir, input.psr0Namespaces) {
+				classmap[fqcn] = fullPath
+			}
+		}
 	}
 	stats.duration = time.Since(started)
 
