@@ -132,6 +132,90 @@ func TestScanClassmapSkipsNonPhp(t *testing.T) {
 	}
 }
 
+func TestScanClassmapSkipsHeredoc(t *testing.T) {
+	dir := t.TempDir()
+	// Simulates PHPUnit's Generator.php pattern: trait declarations inside heredoc strings.
+	writePhp(t, dir, "src/Generator.php", `<?php
+namespace App\Mock;
+
+class Generator {
+    private const TRAIT_TPL = <<<'EOT'
+namespace App\Mock;
+
+trait MockedCloneMethod
+{
+    public function __clone(): void
+    {
+    }
+}
+EOT;
+
+    public function generate() {}
+}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Generator.php"})
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	// Generator should be found.
+	if _, ok := classmap[`App\Mock\Generator`]; !ok {
+		t.Error("missing App\\Mock\\Generator in classmap")
+	}
+	// MockedCloneMethod should NOT be found (it's inside a heredoc).
+	if _, ok := classmap[`App\Mock\MockedCloneMethod`]; ok {
+		t.Error("MockedCloneMethod should not be in classmap (it's inside a heredoc string)")
+	}
+}
+
+func TestScanClassmapReadonlyClass(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Value.php", `<?php
+namespace App\DTO;
+
+readonly class Value {
+    public function __construct(public string $name) {}
+}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Value.php"})
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\DTO\Value`]; !ok {
+		t.Errorf("missing readonly class App\\DTO\\Value in classmap: %v", classmap)
+	}
+}
+
+func TestScanClassmapSkipsNowdoc(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Template.php", `<?php
+namespace App;
+
+class Template {
+    private $tpl = <<<HEREDOC
+namespace Fake;
+
+class FakeClass {}
+HEREDOC;
+}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Template.php"})
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\Template`]; !ok {
+		t.Error("missing App\\Template")
+	}
+	if _, ok := classmap[`Fake\FakeClass`]; ok {
+		t.Error("FakeClass should not be in classmap (it's inside a heredoc)")
+	}
+}
+
 func writePhp(t *testing.T, base, rel, content string) {
 	t.Helper()
 	path := filepath.Join(base, rel)

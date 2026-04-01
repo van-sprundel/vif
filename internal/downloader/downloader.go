@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/van-sprundel/vif/internal/cache"
@@ -142,8 +143,21 @@ func extractZip(data []byte, dest string) error {
 		return fmt.Errorf("open zip: %w", err)
 	}
 
+	// Detect common top-level prefix to strip.
+	// Packagist zips wrap all files in a single top-level directory like
+	// "vendor-name-reference/". We strip this to match Composer's behavior.
+	prefix := detectCommonPrefix(r.File)
+
 	for _, f := range r.File {
-		target := filepath.Join(dest, f.Name)
+		name := f.Name
+		if prefix != "" {
+			name = strings.TrimPrefix(name, prefix)
+			if name == "" {
+				continue // skip the prefix directory entry itself
+			}
+		}
+
+		target := filepath.Join(dest, name)
 
 		// Directory entries.
 		if f.FileInfo().IsDir() {
@@ -164,6 +178,50 @@ func extractZip(data []byte, dest string) error {
 	}
 
 	return nil
+}
+
+// detectCommonPrefix detects the single top-level wrapper directory that
+// packagist zips use (e.g. "package-name-reference/"). Returns "prefix/" if
+// found, or "" if there is no wrapper directory to strip.
+//
+// Heuristic: the zip must contain an explicit top-level directory entry (a name
+// ending in "/" with no other "/" characters) and all other entries must be
+// children of that directory. This avoids stripping legitimate source dirs.
+func detectCommonPrefix(files []*zip.File) string {
+	if len(files) == 0 {
+		return ""
+	}
+
+	// Find top-level directory entries (entries like "name/" with no nested slash).
+	var topDirs []string
+	for _, f := range files {
+		name := f.Name
+		if !strings.HasSuffix(name, "/") {
+			continue
+		}
+		// Top-level = only one slash, at the end.
+		if strings.Count(name, "/") == 1 {
+			topDirs = append(topDirs, name)
+		}
+	}
+
+	// Must have exactly one top-level directory.
+	if len(topDirs) != 1 {
+		return ""
+	}
+	prefix := topDirs[0]
+
+	// Verify all entries are either the prefix itself or children of it.
+	for _, f := range files {
+		if f.Name == prefix {
+			continue
+		}
+		if !strings.HasPrefix(f.Name, prefix) {
+			return ""
+		}
+	}
+
+	return prefix
 }
 
 func extractFile(f *zip.File, target string) error {
