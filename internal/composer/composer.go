@@ -151,8 +151,42 @@ func (cj *ComposerJSON) syncRaw(key string, val interface{}) {
 	cj.raw[key] = json.RawMessage(data)
 }
 
+// composerKeyOrder defines the conventional key ordering for composer.json.
+// Keys not in this list are appended alphabetically after the known keys.
+var composerKeyOrder = []string{
+	"name",
+	"description",
+	"version",
+	"type",
+	"keywords",
+	"homepage",
+	"readme",
+	"time",
+	"license",
+	"authors",
+	"support",
+	"funding",
+	"require",
+	"require-dev",
+	"conflict",
+	"replace",
+	"provide",
+	"suggest",
+	"autoload",
+	"autoload-dev",
+	"repositories",
+	"minimum-stability",
+	"prefer-stable",
+	"config",
+	"scripts",
+	"extra",
+	"bin",
+	"archive",
+	"non-feature-branches",
+}
+
 // Write writes the composer.json back to the given path, preserving all
-// original keys and updating require/require-dev.
+// original keys and updating require/require-dev with deterministic key order.
 func (cj *ComposerJSON) Write(path string) error {
 	// Build output from raw, overriding require/require-dev.
 	out := make(map[string]json.RawMessage, len(cj.raw))
@@ -170,7 +204,7 @@ func (cj *ComposerJSON) Write(path string) error {
 		out["require-dev"] = json.RawMessage(data)
 	}
 
-	data, err := json.MarshalIndent(out, "", "    ")
+	data, err := marshalOrdered(out)
 	if err != nil {
 		return fmt.Errorf("composer: marshal: %w", err)
 	}
@@ -180,4 +214,58 @@ func (cj *ComposerJSON) Write(path string) error {
 		return fmt.Errorf("composer: write %q: %w", path, err)
 	}
 	return nil
+}
+
+// marshalOrdered produces indented JSON with keys in Composer's conventional order.
+func marshalOrdered(m map[string]json.RawMessage) ([]byte, error) {
+	// Collect keys in order: known keys first, then unknown keys sorted.
+	seen := make(map[string]bool, len(m))
+	var keys []string
+	for _, k := range composerKeyOrder {
+		if _, ok := m[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	var extra []string
+	for k := range m {
+		if !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	keys = append(keys, extra...)
+
+	var buf strings.Builder
+	buf.WriteString("{\n")
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteString(",\n")
+		}
+		keyJSON, _ := json.Marshal(k)
+		// Indent the value properly.
+		val, err := indentValue(m[k])
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString("    ")
+		buf.Write(keyJSON)
+		buf.WriteString(": ")
+		buf.Write(val)
+	}
+	buf.WriteString("\n}")
+	return []byte(buf.String()), nil
+}
+
+// indentValue re-indents a JSON value with 4-space indentation at depth 1.
+func indentValue(raw json.RawMessage) ([]byte, error) {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(v, "    ", "    ")
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }

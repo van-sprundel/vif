@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -30,6 +31,16 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 				Reference: rp.Entry.Dist.Reference,
 				Shasum:    rp.Entry.Dist.Shasum,
 			},
+		}
+		if len(rp.Entry.Autoload) > 0 {
+			if err := json.Unmarshal(rp.Entry.Autoload, &p.Autoload); err != nil {
+				return fmt.Errorf("unmarshal autoload for %s: %w", rp.Name, err)
+			}
+		}
+		if len(rp.Entry.AutoloadDev) > 0 {
+			if err := json.Unmarshal(rp.Entry.AutoloadDev, &p.AutoloadDev); err != nil {
+				return fmt.Errorf("unmarshal autoload-dev for %s: %w", rp.Name, err)
+			}
 		}
 		if rp.Dev {
 			devPkgs = append(devPkgs, p)
