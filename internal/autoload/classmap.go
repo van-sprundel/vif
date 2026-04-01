@@ -66,7 +66,10 @@ func isExcluded(baseDir, path string, excludes []string) bool {
 	// Normalize to forward slashes and prepend "/" for prefix-safe matching.
 	normalized := "/" + strings.ReplaceAll(rel, string(filepath.Separator), "/")
 	for _, pattern := range excludes {
-		needle := "/" + strings.Trim(pattern, "/")
+		// Normalise needle: ensure leading "/" and preserve trailing "/" if present.
+		// A trailing "/" means directory-only (e.g. "/Tests/" matches files inside
+		// the Tests directory but NOT a file named Tests.php).
+		needle := "/" + strings.TrimLeft(pattern, "/")
 		if strings.Contains(normalized, needle) {
 			return true
 		}
@@ -132,6 +135,8 @@ type phpParser struct {
 
 func findPHPDeclarations(src string) []string {
 	p := phpParser{src: []byte(src)}
+	// PHP files start in HTML mode; skip to first <?php / <? open tag.
+	p.skipToNextPHPOpen()
 	for {
 		tok := p.nextToken()
 		if tok.kind == phpTokenEOF {
@@ -183,11 +188,13 @@ func (p *phpParser) parseNamespace() {
 			p.namespace = strings.Join(parts, "")
 			p.bracketedNamespaceEnds = nil
 			return
+		case phpTokenBackslash:
+			parts = append(parts, `\`)
+		case phpTokenIdentifier:
+			parts = append(parts, tok.text)
 		default:
-			if tok.kind == phpTokenBackslash {
-				parts = append(parts, `\`)
-			}
-			if tok.kind == phpTokenIdentifier {
+			// Keywords are valid namespace components (e.g. DASPRiD\Enum).
+			if tok.text != "" {
 				parts = append(parts, tok.text)
 			}
 		}
@@ -195,7 +202,10 @@ func (p *phpParser) parseNamespace() {
 }
 
 func (p *phpParser) parseDeclaration(kind phpTokenKind) {
-	if kind == phpTokenClass && p.prevSignificant == phpTokenNew {
+	// Skip: new class { ... } (anonymous class)
+	// Skip: $class, $enum, $trait, $interface (variable names)
+	// Skip: $obj->class, $obj->enum (property access)
+	if p.prevSignificant == phpTokenNew || p.prevSignificant == phpTokenDollar || p.prevSignificant == phpTokenArrow {
 		return
 	}
 
@@ -211,19 +221,18 @@ func (p *phpParser) parseDeclaration(kind phpTokenKind) {
 }
 
 func (p *phpParser) nextIdentifier() string {
-	for {
-		tok := p.nextToken()
-		if tok.kind == phpTokenEOF {
-			return ""
-		}
-		if tok.kind == phpTokenIdentifier {
-			return tok.text
-		}
-		switch tok.kind {
-		case phpTokenLBrace, phpTokenRBrace, phpTokenLParen, phpTokenRParen, phpTokenSemicolon:
-			return ""
-		}
+	// In valid PHP the name immediately follows the keyword (only whitespace/
+	// comments may intervene, and nextToken already skips those).  Bail on any
+	// non-name token to avoid false positives from patterns like
+	// Foo::class, SomeEvent::class => [...], $class = ..., etc.
+	//
+	// Keywords are valid as class/interface/trait/enum names in PHP
+	// (e.g. "class Enum {}", "namespace Foo\Trait;"), so accept them too.
+	tok := p.nextToken()
+	if tok.text != "" {
+		return tok.text
 	}
+	return ""
 }
 
 func (p *phpParser) nextToken() phpToken {
@@ -243,7 +252,15 @@ func (p *phpParser) nextToken() phpToken {
 			continue
 		}
 
-		if p.match("//") || p.match("#") {
+		if p.match("//") {
+			p.skipLineComment()
+			continue
+		}
+		if r == '#' {
+			if p.pos+1 < len(p.src) && p.src[p.pos+1] == '[' {
+				p.skipAttribute()
+				continue
+			}
 			p.skipLineComment()
 			continue
 		}
@@ -283,6 +300,24 @@ func (p *phpParser) nextToken() phpToken {
 			return phpToken{kind: phpTokenRParen}
 		case ';':
 			return phpToken{kind: phpTokenSemicolon}
+		case '?':
+			// PHP close tag ?> — switch to HTML mode until next <?php.
+			if p.pos < len(p.src) && p.src[p.pos] == '>' {
+				p.pos++
+				p.skipToNextPHPOpen()
+				continue
+			}
+			return phpToken{kind: phpTokenOther}
+		case '$':
+			return phpToken{kind: phpTokenDollar, significant: true}
+		case '-':
+			// Consume -> (object operator) so that $obj->class doesn't
+			// trigger a class declaration.
+			if p.pos < len(p.src) && p.src[p.pos] == '>' {
+				p.pos++
+				return phpToken{kind: phpTokenArrow, significant: true}
+			}
+			return phpToken{kind: phpTokenOther, significant: true}
 		case ':', '=', ',', '[', ']':
 			return phpToken{kind: phpTokenOther}
 		default:
@@ -390,6 +425,40 @@ func (p *phpParser) skipHeredoc() {
 	}
 }
 
+// skipToNextPHPOpen advances past any non-PHP content (HTML) until the next
+// <?php or <? open tag.  Used at file start and after ?> close tags.
+func (p *phpParser) skipToNextPHPOpen() {
+	for p.pos < len(p.src) {
+		if p.src[p.pos] == '<' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '?' {
+			p.pos += 2
+			if p.match("php") {
+				p.pos += 3
+			}
+			return
+		}
+		p.pos++
+	}
+}
+
+// skipAttribute skips a PHP 8 attribute: #[...].  Handles nested brackets
+// and quoted strings inside the attribute.
+func (p *phpParser) skipAttribute() {
+	p.pos += 2 // skip #[
+	depth := 1
+	for p.pos < len(p.src) && depth > 0 {
+		switch p.src[p.pos] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+		case '\'', '"':
+			p.skipQuoted(p.src[p.pos])
+			continue
+		}
+		p.pos++
+	}
+}
+
 type phpTokenKind uint8
 
 const (
@@ -401,6 +470,8 @@ const (
 	phpTokenTrait
 	phpTokenEnum
 	phpTokenNew
+	phpTokenDollar
+	phpTokenArrow // -> (object operator)
 	phpTokenBackslash
 	phpTokenLBrace
 	phpTokenRBrace
@@ -417,21 +488,22 @@ type phpToken struct {
 }
 
 func classifyIdentifier(raw []byte) phpToken {
+	text := string(raw)
 	switch {
 	case equalFoldASCII(raw, "namespace"):
-		return phpToken{kind: phpTokenNamespace, significant: true}
+		return phpToken{kind: phpTokenNamespace, text: text, significant: true}
 	case equalFoldASCII(raw, "class"):
-		return phpToken{kind: phpTokenClass, significant: true}
+		return phpToken{kind: phpTokenClass, text: text, significant: true}
 	case equalFoldASCII(raw, "interface"):
-		return phpToken{kind: phpTokenInterface, significant: true}
+		return phpToken{kind: phpTokenInterface, text: text, significant: true}
 	case equalFoldASCII(raw, "trait"):
-		return phpToken{kind: phpTokenTrait, significant: true}
+		return phpToken{kind: phpTokenTrait, text: text, significant: true}
 	case equalFoldASCII(raw, "enum"):
-		return phpToken{kind: phpTokenEnum, significant: true}
+		return phpToken{kind: phpTokenEnum, text: text, significant: true}
 	case equalFoldASCII(raw, "new"):
-		return phpToken{kind: phpTokenNew, significant: true}
+		return phpToken{kind: phpTokenNew, text: text, significant: true}
 	default:
-		return phpToken{kind: phpTokenIdentifier, text: string(raw), significant: true}
+		return phpToken{kind: phpTokenIdentifier, text: text, significant: true}
 	}
 }
 
