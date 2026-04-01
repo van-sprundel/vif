@@ -259,10 +259,12 @@ class Thing {}
 	}
 }
 
-func TestGeneratePSR4ClassmapScanning(t *testing.T) {
+func TestGeneratePSR4NotInClassmap(t *testing.T) {
 	vendorDir := t.TempDir()
 
 	// Create a fake package with only PSR-4 autoload (no explicit classmap).
+	// PSR-4 classes should NOT appear in classmap in non-optimized mode —
+	// they are resolved at runtime by the ClassLoader.
 	pkgSrcDir := filepath.Join(vendorDir, "acme/psr4only", "src")
 	if err := os.MkdirAll(pkgSrcDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -296,8 +298,8 @@ class Widget {}
 	}
 	content := string(data)
 
-	if !strings.Contains(content, `'Acme\\Psr4Only\\Widget'`) {
-		t.Errorf("autoload_classmap.php should contain Acme\\Psr4Only\\Widget (from PSR-4 scan), got:\n%s", content)
+	if strings.Contains(content, `'Acme\\Psr4Only\\Widget'`) {
+		t.Errorf("autoload_classmap.php should NOT contain PSR-4 classes in non-optimized mode, got:\n%s", content)
 	}
 }
 

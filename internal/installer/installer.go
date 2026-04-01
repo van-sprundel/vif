@@ -56,6 +56,11 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 		}
 	}
 
+	// Create vendor/bin/ proxies.
+	if err := installBinaries(vendorDir, all); err != nil {
+		return fmt.Errorf("install binaries: %w", err)
+	}
+
 	// Write installed.json.
 	if err := writeInstalledJSON(vendorDir, packages, devPackages); err != nil {
 		return fmt.Errorf("write installed.json: %w", err)
@@ -160,6 +165,45 @@ func removeStale(vendorDir string, expected map[string]struct{}) error {
 		remaining, _ := os.ReadDir(orgPath)
 		if len(remaining) == 0 {
 			os.Remove(orgPath)
+		}
+	}
+
+	return nil
+}
+
+// installBinaries creates symlinks in vendor/bin/ for packages that declare bin entries.
+func installBinaries(vendorDir string, packages []pkg.Package) error {
+	binDir := filepath.Join(vendorDir, "bin")
+
+	// Collect all bin entries.
+	var hasBins bool
+	for _, p := range packages {
+		if len(p.Bin) > 0 {
+			hasBins = true
+			break
+		}
+	}
+	if !hasBins {
+		return nil
+	}
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir bin: %w", err)
+	}
+
+	for _, p := range packages {
+		for _, bin := range p.Bin {
+			// Target: relative from vendor/bin/ to vendor/<package>/<bin>
+			target := filepath.Join("..", p.Name, bin)
+			name := filepath.Base(bin)
+			link := filepath.Join(binDir, name)
+
+			// Remove existing link/file.
+			os.Remove(link)
+
+			if err := os.Symlink(target, link); err != nil {
+				return fmt.Errorf("symlink %s -> %s: %w", link, target, err)
+			}
 		}
 	}
 
