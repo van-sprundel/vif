@@ -10,7 +10,9 @@ import (
 
 var (
 	namespaceRe = regexp.MustCompile(`(?m)^\s*namespace\s+([\w\\]+)`)
-	classRe     = regexp.MustCompile(`(?m)^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+(\w+)`)
+	classRe     = regexp.MustCompile(`(?m)^\s*(?:abstract\s+|final\s+)?(?:readonly\s+)?(?:class|interface|trait|enum)\s+(\w+)`)
+	// heredocRe matches the start of a heredoc/nowdoc: <<<EOT or <<<'EOT'
+	heredocStartRe = regexp.MustCompile(`<<<\s*'?(\w+)'?\s*$`)
 )
 
 // ScanClassmap scans directories and files for PHP class declarations.
@@ -66,9 +68,22 @@ func scanFile(baseDir, path string, classmap map[string]string) error {
 	defer f.Close()
 
 	var namespace string
+	var heredocEnd string // non-empty when inside a heredoc/nowdoc block
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// Track heredoc/nowdoc blocks to skip class declarations inside strings.
+		if heredocEnd != "" {
+			if strings.TrimSpace(line) == heredocEnd || strings.TrimSpace(line) == heredocEnd+";" {
+				heredocEnd = ""
+			}
+			continue
+		}
+		if m := heredocStartRe.FindStringSubmatch(line); m != nil {
+			heredocEnd = m[1]
+			continue
+		}
 
 		if m := namespaceRe.FindStringSubmatch(line); m != nil {
 			namespace = m[1]

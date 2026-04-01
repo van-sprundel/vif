@@ -339,6 +339,92 @@ func TestDownloadContextCancellation(t *testing.T) {
 	}
 }
 
+// makeZipWithPrefix creates a zip where all files are nested under a top-level
+// directory, mimicking how packagist zips are structured.
+func makeZipWithPrefix(t *testing.T, prefix string, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	// Create the top-level directory entry.
+	if _, err := w.Create(prefix); err != nil {
+		t.Fatalf("zip create dir %q: %v", prefix, err)
+	}
+	for name, content := range files {
+		f, err := w.Create(prefix + name)
+		if err != nil {
+			t.Fatalf("zip create %q: %v", name, err)
+		}
+		if _, err := f.Write([]byte(content)); err != nil {
+			t.Fatalf("zip write %q: %v", name, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestDownloadStripsTopLevelPrefix(t *testing.T) {
+	// Simulate a packagist-style zip with a top-level "vendor-foo-abc123/" wrapper.
+	zipData := makeZipWithPrefix(t, "vendor-foo-abc123/", map[string]string{
+		"src/Foo.php":     "<?php class Foo {}",
+		"composer.json":   `{"name":"vendor/foo"}`,
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	packages := []pkg.Package{
+		{
+			Name:    "vendor/foo",
+			Version: "1.0.0",
+			Dist: pkg.Dist{
+				Type:      "zip",
+				URL:       srv.URL + "/vendor-foo-1.0.0.zip",
+				Reference: "abc123",
+			},
+		},
+	}
+
+	d := downloader.New(c, 1)
+	results, err := d.Download(context.Background(), packages)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("result error: %v", results[0].Err)
+	}
+
+	// Files should be extracted WITHOUT the top-level prefix directory.
+	key := cache.CacheKey(packages[0].Dist.URL)
+	extractedDir := c.ExtractedDir(key)
+
+	// src/Foo.php should exist directly, not under vendor-foo-abc123/.
+	fooPath := filepath.Join(extractedDir, "src", "Foo.php")
+	data, err := os.ReadFile(fooPath)
+	if err != nil {
+		t.Fatalf("expected src/Foo.php at root, got error: %v", err)
+	}
+	if string(data) != "<?php class Foo {}" {
+		t.Errorf("content = %q, want %q", data, "<?php class Foo {}")
+	}
+
+	// The wrapper directory should NOT exist.
+	wrapperPath := filepath.Join(extractedDir, "vendor-foo-abc123")
+	if _, err := os.Stat(wrapperPath); err == nil {
+		t.Error("top-level wrapper directory should have been stripped")
+	}
+}
+
 func BenchmarkDownloadParallel(b *testing.B) {
 	zipData := makeZipB(b, map[string]string{
 		"src/Bench.php": "<?php class Bench {}",
