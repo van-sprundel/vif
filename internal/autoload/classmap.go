@@ -11,7 +11,19 @@ import (
 // excludes is an optional list of path patterns (e.g. "/Tests/") — any file whose
 // relative path (with a leading "/") contains the trimmed pattern is skipped.
 func ScanClassmap(baseDir string, entries []string, excludes []string) (map[string]string, error) {
+	classmap, _, err := scanClassmapWithStats(baseDir, entries, excludes)
+	return classmap, err
+}
+
+type classmapScanStats struct {
+	Entries int
+	Files   int
+	Symbols int
+}
+
+func scanClassmapWithStats(baseDir string, entries []string, excludes []string) (map[string]string, classmapScanStats, error) {
 	classmap := make(map[string]string)
+	stats := classmapScanStats{Entries: len(entries)}
 
 	for _, entry := range entries {
 		target := filepath.Join(baseDir, entry)
@@ -24,20 +36,20 @@ func ScanClassmap(baseDir string, entries []string, excludes []string) (map[stri
 		}
 
 		if info.IsDir() {
-			if err := scanDir(baseDir, target, excludes, classmap); err != nil {
-				return nil, err
+			if err := scanDir(baseDir, target, excludes, classmap, &stats); err != nil {
+				return nil, classmapScanStats{}, err
 			}
 		} else {
 			if isExcluded(baseDir, target, excludes) {
 				continue
 			}
-			if err := scanFile(baseDir, target, classmap); err != nil {
-				return nil, err
+			if err := scanFile(baseDir, target, classmap, &stats); err != nil {
+				return nil, classmapScanStats{}, err
 			}
 		}
 	}
 
-	return classmap, nil
+	return classmap, stats, nil
 }
 
 // isExcluded reports whether path should be skipped based on the exclude patterns.
@@ -62,7 +74,7 @@ func isExcluded(baseDir, path string, excludes []string) bool {
 	return false
 }
 
-func scanDir(baseDir, dir string, excludes []string, classmap map[string]string) error {
+func scanDir(baseDir, dir string, excludes []string, classmap map[string]string, stats *classmapScanStats) error {
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -77,19 +89,25 @@ func scanDir(baseDir, dir string, excludes []string, classmap map[string]string)
 		if isExcluded(baseDir, path, excludes) {
 			return nil
 		}
-		return scanFile(baseDir, path, classmap)
+		return scanFile(baseDir, path, classmap, stats)
 	})
 }
 
-func scanFile(baseDir, path string, classmap map[string]string) error {
+func scanFile(baseDir, path string, classmap map[string]string, stats *classmapScanStats) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
+	}
+	if stats != nil {
+		stats.Files++
 	}
 
 	symbols := findPHPDeclarations(string(data))
 	if len(symbols) == 0 {
 		return nil
+	}
+	if stats != nil {
+		stats.Symbols += len(symbols)
 	}
 
 	rel, err := filepath.Rel(baseDir, path)
@@ -122,12 +140,9 @@ func findPHPDeclarations(src string) []string {
 
 		switch tok.kind {
 		case phpTokenLBrace:
-			for len(p.bracketedNamespaceEnds) > 0 {
+			if len(p.bracketedNamespaceEnds) > 0 {
 				last := len(p.bracketedNamespaceEnds) - 1
 				p.bracketedNamespaceEnds[last]++
-				if last == 0 {
-					break
-				}
 			}
 		case phpTokenRBrace:
 			if len(p.bracketedNamespaceEnds) > 0 {

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/pkg"
 )
@@ -73,7 +74,8 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 		}
 	}
 
-	scannedClassmaps, err := scanPackageClassmaps(scanInputs)
+	debugAutoload := os.Getenv("VIF_AUTOLOAD_DEBUG") != ""
+	scannedClassmaps, scanStats, err := scanPackageClassmaps(scanInputs)
 	if err != nil {
 		return err
 	}
@@ -81,6 +83,9 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 		for fqcn, path := range scanned {
 			classmap[fqcn] = path
 		}
+	}
+	if debugAutoload {
+		logAutoloadScanStats(scanStats)
 	}
 
 	// Sort files for deterministic output.
@@ -130,7 +135,18 @@ type packageScanInput struct {
 type packageScanResult struct {
 	index    int
 	classmap map[string]string
+	stats    packageScanStats
 	err      error
+}
+
+type packageScanStats struct {
+	name            string
+	classmapEntries int
+	psr4Entries     int
+	psr0Entries     int
+	files           int
+	symbols         int
+	duration        time.Duration
 }
 
 // fileHash returns the md5 hex of "packageName:filePath", matching Composer's behavior.
@@ -149,11 +165,17 @@ func flattenAutoloadPaths(m map[string][]string) []string {
 	return paths
 }
 
-func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, error) {
+func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, []packageScanStats, error) {
 	results := make([]map[string]string, len(inputs))
+	stats := make([]packageScanStats, len(inputs))
 	if len(inputs) == 0 {
-		return results, nil
+		return results, stats, nil
 	}
+	debugAutoload := os.Getenv("VIF_AUTOLOAD_DEBUG") != ""
+	completed := 0
+	var completedFiles int
+	var completedSymbols int
+	var completedDuration time.Duration
 
 	ch := make(chan packageScanResult, len(inputs))
 	var wg sync.WaitGroup
@@ -161,10 +183,11 @@ func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, error
 		wg.Add(1)
 		go func(index int, input packageScanInput) {
 			defer wg.Done()
-			scanned, err := scanPackageClassmap(input)
+			scanned, stats, err := scanPackageClassmap(input)
 			ch <- packageScanResult{
 				index:    index,
 				classmap: scanned,
+				stats:    stats,
 				err:      err,
 			}
 		}(i, input)
@@ -176,25 +199,82 @@ func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, error
 
 	for result := range ch {
 		if result.err != nil {
-			return nil, result.err
+			return nil, nil, result.err
 		}
 		results[result.index] = result.classmap
+		stats[result.index] = result.stats
+		completed++
+		completedFiles += result.stats.files
+		completedSymbols += result.stats.symbols
+		completedDuration += result.stats.duration
+		if debugAutoload && (result.stats.duration >= 2*time.Second || result.stats.files >= 1000 || completed%25 == 0) {
+			fmt.Fprintf(os.Stderr, "autoload scan progress: completed=%d/%d package=%s files=%d symbols=%d classmap=%d psr4=%d psr0=%d package_time=%s cumulative_cpu=%s\n",
+				completed, len(inputs), result.stats.name, result.stats.files, result.stats.symbols, result.stats.classmapEntries, result.stats.psr4Entries, result.stats.psr0Entries,
+				result.stats.duration.Round(time.Millisecond), completedDuration.Round(time.Millisecond))
+		}
 	}
 
-	return results, nil
+	return results, stats, nil
 }
 
-func scanPackageClassmap(input packageScanInput) (map[string]string, error) {
+func logAutoloadScanStats(stats []packageScanStats) {
+	total := packageScanStats{name: "TOTAL"}
+	filtered := stats[:0]
+	for _, stat := range stats {
+		if stat.name == "" {
+			continue
+		}
+		total.classmapEntries += stat.classmapEntries
+		total.psr4Entries += stat.psr4Entries
+		total.psr0Entries += stat.psr0Entries
+		total.files += stat.files
+		total.symbols += stat.symbols
+		total.duration += stat.duration
+		if stat.files > 0 {
+			filtered = append(filtered, stat)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].duration == filtered[j].duration {
+			return filtered[i].files > filtered[j].files
+		}
+		return filtered[i].duration > filtered[j].duration
+	})
+
+	fmt.Fprintf(os.Stderr, "autoload scan total: packages=%d classmap_entries=%d psr4_entries=%d psr0_entries=%d files=%d symbols=%d cpu_time=%s\n",
+		len(filtered), total.classmapEntries, total.psr4Entries, total.psr0Entries, total.files, total.symbols, total.duration.Round(time.Millisecond))
+	limit := 15
+	if len(filtered) < limit {
+		limit = len(filtered)
+	}
+	for i := 0; i < limit; i++ {
+		stat := filtered[i]
+		fmt.Fprintf(os.Stderr, "autoload scan top[%d]: package=%s files=%d symbols=%d classmap=%d psr4=%d psr0=%d time=%s\n",
+			i+1, stat.name, stat.files, stat.symbols, stat.classmapEntries, stat.psr4Entries, stat.psr0Entries, stat.duration.Round(time.Millisecond))
+	}
+}
+
+func scanPackageClassmap(input packageScanInput) (map[string]string, packageScanStats, error) {
 	classmap := make(map[string]string)
+	stats := packageScanStats{
+		name:            input.name,
+		classmapEntries: len(input.classmap),
+		psr4Entries:     len(input.psr4),
+		psr0Entries:     len(input.psr0),
+	}
+	started := time.Now()
 
 	addEntries := func(label string, entries []string) error {
 		if len(entries) == 0 {
 			return nil
 		}
-		scanned, err := ScanClassmap(input.pkgPath, entries, input.excludes)
+		scanned, scanStats, err := scanClassmapWithStats(input.pkgPath, entries, input.excludes)
 		if err != nil {
 			return fmt.Errorf("autoload: %s scan %s: %w", label, input.name, err)
 		}
+		stats.files += scanStats.Files
+		stats.symbols += scanStats.Symbols
 		for fqcn, relPath := range scanned {
 			classmap[fqcn] = filepath.Join(input.pkgDir, relPath)
 		}
@@ -202,16 +282,17 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, error) {
 	}
 
 	if err := addEntries("classmap", input.classmap); err != nil {
-		return nil, err
+		return nil, packageScanStats{}, err
 	}
 	if err := addEntries("psr-4 classmap", input.psr4); err != nil {
-		return nil, err
+		return nil, packageScanStats{}, err
 	}
 	if err := addEntries("psr-0 classmap", input.psr0); err != nil {
-		return nil, err
+		return nil, packageScanStats{}, err
 	}
+	stats.duration = time.Since(started)
 
-	return classmap, nil
+	return classmap, stats, nil
 }
 
 // --- Simple return-array files ---
