@@ -74,8 +74,8 @@ func (d *Downloader) Download(ctx context.Context, packages []pkg.Package) ([]Re
 }
 
 func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
-	// Skip path-type packages — they're local dependencies, not downloadable.
-	if p.Dist.Type == "path" {
+	// Skip path-type packages (local deps) and metapackages (no code).
+	if p.Dist.Type == "path" || p.Type == "metapackage" {
 		return Result{Package: p, Skipped: true}
 	}
 
