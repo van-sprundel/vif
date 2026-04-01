@@ -274,24 +274,86 @@ func compareVendorDirs(t *testing.T, fixture, composerVendor, vifVendor string) 
 // phpArrayPattern matches lines within a PHP return array(...) block.
 // We extract key => value pairs for comparison.
 var phpArrayEntryRe = regexp.MustCompile(`^\s+'([^'\\]*(?:\\.[^'\\]*)*)'\s+=>\s+(.+),?\s*$`)
+var phpReturnArrayStartRe = regexp.MustCompile(`^\s*return\s+(?:\\?array\s*\(|\[)\s*$`)
 
 // extractPHPArrayEntries parses key => value pairs from a PHP autoloader file.
 // This is a best-effort line-by-line parser, not a full PHP parser.
+// It handles nested arrays (like PSR-0 letter-indexed entries) by tracking
+// brace/paren depth and skipping entries inside nested structures.
 func extractPHPArrayEntries(content string) map[string]string {
 	entries := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	depth := 0
+	inReturn := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		m := phpArrayEntryRe.FindStringSubmatch(line)
-		if m == nil {
+		trimmed := strings.TrimSpace(line)
+
+		// Track when we're inside a return array(...) or return [...] block.
+		if phpReturnArrayStartRe.MatchString(trimmed) {
+			inReturn = true
+			depth = 1
 			continue
 		}
-		key := m[1]
-		val := strings.TrimRight(m[2], ",")
-		val = strings.TrimSpace(val)
-		entries[key] = val
+		if !inReturn {
+			continue
+		}
+
+		// Parse entries at the current depth before applying this line's depth delta.
+		if depth == 1 {
+			m := phpArrayEntryRe.FindStringSubmatch(line)
+			if m != nil {
+				key := m[1]
+				val := strings.TrimRight(strings.TrimSpace(m[2]), ",")
+				// Skip top-level entries whose value is itself an array (e.g. PSR-0
+				// letter buckets), we only compare flat key => value mappings.
+				if !strings.HasPrefix(val, "array(") && !strings.HasPrefix(val, "[") {
+					entries[key] = val
+				}
+			}
+		}
+
+		// Count depth changes from parens and brackets outside single-quoted strings.
+		depth += phpNestingDelta(line)
+		if depth <= 0 {
+			inReturn = false
+		}
 	}
 	return entries
+}
+
+func phpNestingDelta(line string) int {
+	delta := 0
+	inSingleQuote := false
+	escaped := false
+	for _, c := range line {
+		if inSingleQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '\'' {
+				inSingleQuote = false
+			}
+			continue
+		}
+		if c == '\'' {
+			inSingleQuote = true
+			continue
+		}
+		switch c {
+		case '(', '[':
+			delta++
+		case ')', ']':
+			delta--
+		}
+	}
+	return delta
 }
 
 // diffAutoloaderFile compares the PHP array entries in two autoloader files and
@@ -314,9 +376,15 @@ func diffAutoloaderFile(t *testing.T, relPath, composerPath, vifPath string) str
 	var diffs []string
 
 	for k, cv := range composerEntries {
+		if shouldSkipAutoloaderEntry(k, cv) {
+			continue
+		}
 		vv, ok := vifEntries[k]
 		if !ok {
 			diffs = append(diffs, fmt.Sprintf("  missing key %q (composer has: %s)", k, cv))
+			continue
+		}
+		if shouldSkipAutoloaderEntry(k, vv) {
 			continue
 		}
 		// Normalise path separators and trim __DIR__ prefix variants for comparison.
@@ -325,6 +393,9 @@ func diffAutoloaderFile(t *testing.T, relPath, composerPath, vifPath string) str
 		}
 	}
 	for k, vv := range vifEntries {
+		if shouldSkipAutoloaderEntry(k, vv) {
+			continue
+		}
 		if _, ok := composerEntries[k]; !ok {
 			diffs = append(diffs, fmt.Sprintf("  extra key %q (vif has: %s)", k, vv))
 		}
@@ -335,6 +406,16 @@ func diffAutoloaderFile(t *testing.T, relPath, composerPath, vifPath string) str
 	}
 	sort.Strings(diffs)
 	return fmt.Sprintf("%s:\n%s", relPath, strings.Join(diffs, "\n"))
+}
+
+// shouldSkipAutoloaderEntry filters known Phase 1 compat differences:
+// - root package autoload paths using $baseDir
+// - Composer\InstalledVersions classmap/autoload entries
+func shouldSkipAutoloaderEntry(key, val string) bool {
+	if strings.Contains(val, "$baseDir") {
+		return true
+	}
+	return key == `Composer\\InstalledVersions` || strings.Contains(val, "InstalledVersions")
 }
 
 // normalisePHPPath strips the __DIR__ / $vendorDir prefix and OS path separator

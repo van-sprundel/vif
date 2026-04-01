@@ -259,6 +259,48 @@ class Thing {}
 	}
 }
 
+func TestGeneratePSR4ClassmapScanning(t *testing.T) {
+	vendorDir := t.TempDir()
+
+	// Create a fake package with only PSR-4 autoload (no explicit classmap).
+	pkgSrcDir := filepath.Join(vendorDir, "acme/psr4only", "src")
+	if err := os.MkdirAll(pkgSrcDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgSrcDir, "Widget.php"), []byte(`<?php
+namespace Acme\Psr4Only;
+
+class Widget {}
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	packages := []pkg.Package{
+		{
+			Name: "acme/psr4only",
+			Autoload: pkg.Autoload{
+				PSR4: map[string][]string{
+					`Acme\Psr4Only\`: {"src"},
+				},
+			},
+		},
+	}
+
+	if err := Generate(vendorDir, packages, "h7"); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(vendorDir, "composer", "autoload_classmap.php"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `'Acme\\Psr4Only\\Widget'`) {
+		t.Errorf("autoload_classmap.php should contain Acme\\Psr4Only\\Widget (from PSR-4 scan), got:\n%s", content)
+	}
+}
+
 func TestGenerateClassLoaderEmbedded(t *testing.T) {
 	vendorDir := t.TempDir()
 

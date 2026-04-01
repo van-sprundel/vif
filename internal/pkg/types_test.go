@@ -9,10 +9,10 @@ import (
 
 func TestAutoloadUnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantErr  bool
-		check    func(t *testing.T, a pkg.Autoload)
+		name    string
+		input   string
+		wantErr bool
+		check   func(t *testing.T, a pkg.Autoload)
 	}{
 		{
 			name:  "psr-4 string value normalized to slice",
@@ -58,7 +58,7 @@ func TestAutoloadUnmarshalJSON(t *testing.T) {
 		},
 		{
 			name:  "classmap and files populated",
-			input: `{"classmap":["src/Foo.php"],"files":["bootstrap.php"]}`,
+			input: `{"classmap":["src/Foo.php"],"files":["bootstrap.php"],"exclude-from-classmap":["/Tests/"]}`,
 			check: func(t *testing.T, a pkg.Autoload) {
 				t.Helper()
 				if len(a.Classmap) != 1 || a.Classmap[0] != "src/Foo.php" {
@@ -66,6 +66,9 @@ func TestAutoloadUnmarshalJSON(t *testing.T) {
 				}
 				if len(a.Files) != 1 || a.Files[0] != "bootstrap.php" {
 					t.Errorf("Files = %v, want [\"bootstrap.php\"]", a.Files)
+				}
+				if len(a.ExcludeFromClassmap) != 1 || a.ExcludeFromClassmap[0] != "/Tests/" {
+					t.Errorf("ExcludeFromClassmap = %v, want [\"/Tests/\"]", a.ExcludeFromClassmap)
 				}
 			},
 		},

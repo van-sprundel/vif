@@ -28,18 +28,20 @@ type Dist struct {
 // Composer allows values to be either a single string or an array of strings;
 // UnmarshalJSON normalizes both forms to []string.
 type Autoload struct {
-	PSR4     map[string][]string `json:"psr-4"`
-	PSR0     map[string][]string `json:"psr-0"`
-	Classmap []string            `json:"classmap"`
-	Files    []string            `json:"files"`
+	PSR4                map[string][]string `json:"psr-4"`
+	PSR0                map[string][]string `json:"psr-0"`
+	Classmap            []string            `json:"classmap"`
+	Files               []string            `json:"files"`
+	ExcludeFromClassmap []string            `json:"exclude-from-classmap"`
 }
 
 // autoloadRaw is the wire format before normalization.
 type autoloadRaw struct {
-	PSR4     map[string]json.RawMessage `json:"psr-4"`
-	PSR0     map[string]json.RawMessage `json:"psr-0"`
-	Classmap []string                   `json:"classmap"`
-	Files    []string                   `json:"files"`
+	PSR4                map[string]json.RawMessage `json:"psr-4"`
+	PSR0                map[string]json.RawMessage `json:"psr-0"`
+	Classmap            []string                   `json:"classmap"`
+	Files               []string                   `json:"files"`
+	ExcludeFromClassmap []string                   `json:"exclude-from-classmap"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler for Autoload.
@@ -53,6 +55,7 @@ func (a *Autoload) UnmarshalJSON(data []byte) error {
 
 	a.Classmap = raw.Classmap
 	a.Files = raw.Files
+	a.ExcludeFromClassmap = raw.ExcludeFromClassmap
 
 	var err error
 	a.PSR4, err = normalizeStringMap(raw.PSR4)
