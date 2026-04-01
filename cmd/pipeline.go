@@ -25,6 +25,7 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 			Name:    rp.Name,
 			Version: rp.Version,
 			Type:    rp.Entry.Type,
+			Bin:     rp.Entry.Bin,
 			Dist: pkg.Dist{
 				Type:      rp.Entry.Dist.Type,
 				URL:       rp.Entry.Dist.URL,
