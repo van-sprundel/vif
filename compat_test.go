@@ -61,12 +61,19 @@ var sharedCompatCache struct {
 }
 
 // getSharedCache returns a shared cache dir, initialising it once per test run.
+// Set VIF_COMPAT_CACHE_DIR to use a specific directory (e.g. on a disk-backed
+// filesystem instead of /tmp which may be a small tmpfs).
 func getSharedCache(t *testing.T) (string, error) {
 	t.Helper()
 	sharedCompatCache.once.Do(func() {
-		// Use a temp dir under os.TempDir so it persists across subtests but
-		// is cleaned up when the test binary exits.
-		dir, err := os.MkdirTemp("", "vif-compat-cache-*")
+		base := os.Getenv("VIF_COMPAT_CACHE_DIR")
+		if base != "" {
+			if err := os.MkdirAll(base, 0o755); err != nil {
+				sharedCompatCache.initErr = fmt.Errorf("create cache base dir %s: %w", base, err)
+				return
+			}
+		}
+		dir, err := os.MkdirTemp(base, "vif-compat-cache-*")
 		if err != nil {
 			sharedCompatCache.initErr = fmt.Errorf("create shared cache dir: %w", err)
 			return

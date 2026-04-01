@@ -1,2 +1,3 @@
 vif*
 vendor/
+.compat-cache/
