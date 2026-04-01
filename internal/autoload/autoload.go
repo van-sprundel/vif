@@ -59,8 +59,6 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 			pkgDir:   pkgDir,
 			pkgPath:  pkgPath,
 			classmap: append([]string(nil), p.Autoload.Classmap...),
-			psr4:     flattenAutoloadPaths(p.Autoload.PSR4),
-			psr0:     flattenAutoloadPaths(p.Autoload.PSR0),
 			excludes: append([]string(nil), excludes...),
 		})
 
@@ -127,8 +125,6 @@ type packageScanInput struct {
 	pkgDir   string
 	pkgPath  string
 	classmap []string
-	psr4     []string
-	psr0     []string
 	excludes []string
 }
 
@@ -142,8 +138,6 @@ type packageScanResult struct {
 type packageScanStats struct {
 	name            string
 	classmapEntries int
-	psr4Entries     int
-	psr0Entries     int
 	files           int
 	symbols         int
 	duration        time.Duration
@@ -152,17 +146,6 @@ type packageScanStats struct {
 // fileHash returns the md5 hex of "packageName:filePath", matching Composer's behavior.
 func fileHash(packageName, filePath string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(packageName+":"+filePath)))
-}
-
-func flattenAutoloadPaths(m map[string][]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	var paths []string
-	for _, entries := range m {
-		paths = append(paths, entries...)
-	}
-	return paths
 }
 
 func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, []packageScanStats, error) {
@@ -208,8 +191,8 @@ func scanPackageClassmaps(inputs []packageScanInput) ([]map[string]string, []pac
 		completedSymbols += result.stats.symbols
 		completedDuration += result.stats.duration
 		if debugAutoload && (result.stats.duration >= 2*time.Second || result.stats.files >= 1000 || completed%25 == 0) {
-			fmt.Fprintf(os.Stderr, "autoload scan progress: completed=%d/%d package=%s files=%d symbols=%d classmap=%d psr4=%d psr0=%d package_time=%s cumulative_cpu=%s\n",
-				completed, len(inputs), result.stats.name, result.stats.files, result.stats.symbols, result.stats.classmapEntries, result.stats.psr4Entries, result.stats.psr0Entries,
+			fmt.Fprintf(os.Stderr, "autoload scan progress: completed=%d/%d package=%s files=%d symbols=%d classmap=%d package_time=%s cumulative_cpu=%s\n",
+				completed, len(inputs), result.stats.name, result.stats.files, result.stats.symbols, result.stats.classmapEntries,
 				result.stats.duration.Round(time.Millisecond), completedDuration.Round(time.Millisecond))
 		}
 	}
@@ -225,8 +208,6 @@ func logAutoloadScanStats(stats []packageScanStats) {
 			continue
 		}
 		total.classmapEntries += stat.classmapEntries
-		total.psr4Entries += stat.psr4Entries
-		total.psr0Entries += stat.psr0Entries
 		total.files += stat.files
 		total.symbols += stat.symbols
 		total.duration += stat.duration
@@ -242,16 +223,16 @@ func logAutoloadScanStats(stats []packageScanStats) {
 		return filtered[i].duration > filtered[j].duration
 	})
 
-	fmt.Fprintf(os.Stderr, "autoload scan total: packages=%d classmap_entries=%d psr4_entries=%d psr0_entries=%d files=%d symbols=%d cpu_time=%s\n",
-		len(filtered), total.classmapEntries, total.psr4Entries, total.psr0Entries, total.files, total.symbols, total.duration.Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "autoload scan total: packages=%d classmap_entries=%d files=%d symbols=%d cpu_time=%s\n",
+		len(filtered), total.classmapEntries, total.files, total.symbols, total.duration.Round(time.Millisecond))
 	limit := 15
 	if len(filtered) < limit {
 		limit = len(filtered)
 	}
 	for i := 0; i < limit; i++ {
 		stat := filtered[i]
-		fmt.Fprintf(os.Stderr, "autoload scan top[%d]: package=%s files=%d symbols=%d classmap=%d psr4=%d psr0=%d time=%s\n",
-			i+1, stat.name, stat.files, stat.symbols, stat.classmapEntries, stat.psr4Entries, stat.psr0Entries, stat.duration.Round(time.Millisecond))
+		fmt.Fprintf(os.Stderr, "autoload scan top[%d]: package=%s files=%d symbols=%d classmap=%d time=%s\n",
+			i+1, stat.name, stat.files, stat.symbols, stat.classmapEntries, stat.duration.Round(time.Millisecond))
 	}
 }
 
@@ -260,8 +241,6 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 	stats := packageScanStats{
 		name:            input.name,
 		classmapEntries: len(input.classmap),
-		psr4Entries:     len(input.psr4),
-		psr0Entries:     len(input.psr0),
 	}
 	started := time.Now()
 
@@ -281,13 +260,10 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 		return nil
 	}
 
+	// Only scan explicit classmap entries. PSR-4/PSR-0 are resolved at runtime
+	// by the ClassLoader. Scanning them into classmap is only done in optimized
+	// mode (composer dump-autoload -o), which vif doesn't support yet.
 	if err := addEntries("classmap", input.classmap); err != nil {
-		return nil, packageScanStats{}, err
-	}
-	if err := addEntries("psr-4 classmap", input.psr4); err != nil {
-		return nil, packageScanStats{}, err
-	}
-	if err := addEntries("psr-0 classmap", input.psr0); err != nil {
 		return nil, packageScanStats{}, err
 	}
 	stats.duration = time.Since(started)

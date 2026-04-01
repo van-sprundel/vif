@@ -10,6 +10,7 @@ type Package struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
 	Type        string   `json:"type"`
+	Bin         []string `json:"bin"`
 	Dist        Dist     `json:"dist"`
 	Autoload    Autoload `json:"autoload"`
 	AutoloadDev Autoload `json:"autoload-dev"`
