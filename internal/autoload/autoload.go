@@ -98,6 +98,7 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 		"autoload_static.php":     generateStatic(hash, psr4, psr0, classmap, files),
 		"autoload_real.php":       generateReal(hash, len(files) > 0),
 		"ClassLoader.php":         classLoaderPHP,
+		"LICENSE":                 composerLicense,
 	}
 
 	for name, content := range writers {
