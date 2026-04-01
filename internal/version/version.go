@@ -33,8 +33,8 @@ type Version struct {
 }
 
 var (
-	devBranchRe  = regexp.MustCompile(`^dev-(.+)$`)
-	versionRe    = regexp.MustCompile(`^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:[-.]?(dev|alpha|beta|rc|RC|patch|p|stable)(\d*))?$`)
+	devBranchRe = regexp.MustCompile(`^dev-(.+)$`)
+	versionRe   = regexp.MustCompile(`^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?(?:[-.]?(dev|alpha|beta|rc|RC|patch|p|stable)(\d*))?$`)
 )
 
 // Parse parses a Composer version string into a Version.

@@ -21,9 +21,9 @@ func sampleResponse() packagist.APIResponse {
 					VersionNormalized: "2.0.0.0",
 					Type:              "library",
 					Require: map[string]string{
-						"php":       ">=8.0",
-						"acme/bar":  "^1.0",
-						"psr/log":   "^3.0",
+						"php":      ">=8.0",
+						"acme/bar": "^1.0",
+						"psr/log":  "^3.0",
 					},
 					RequireDev: map[string]string{
 						"phpunit/phpunit": "^10.0",
@@ -184,11 +184,11 @@ func TestFilterPlatformRequirements(t *testing.T) {
 		Name:    "acme/foo",
 		Version: "1.0.0",
 		Require: map[string]string{
-			"php":        ">=8.0",
-			"ext-json":   "*",
+			"php":          ">=8.0",
+			"ext-json":     "*",
 			"ext-mbstring": "*",
-			"acme/bar":   "^1.0",
-			"psr/log":    "^3.0",
+			"acme/bar":     "^1.0",
+			"psr/log":      "^3.0",
 		},
 	}
 

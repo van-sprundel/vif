@@ -28,9 +28,9 @@ const compatFixturesDir = "testdata/fixtures/compat"
 
 // compatSkipFiles are vendor/composer/ files vif doesn't generate yet.
 var compatSkipFiles = map[string]bool{
-	"vendor/composer/installed.php":       true,
+	"vendor/composer/installed.php":         true,
 	"vendor/composer/InstalledVersions.php": true,
-	"vendor/composer/platform_check.php":   true,
+	"vendor/composer/platform_check.php":    true,
 }
 
 // compatAutoloaderFiles are the autoloader files whose content we compare.
@@ -44,13 +44,13 @@ var compatAutoloaderFiles = map[string]bool{
 
 // compatResult holds a per-fixture compat result for the summary test.
 type compatResult struct {
-	fixture        string
-	composerTotal  int
-	vifTotal       int
-	missingFiles   []string
-	extraFiles     []string
+	fixture           string
+	composerTotal     int
+	vifTotal          int
+	missingFiles      []string
+	extraFiles        []string
 	contentMismatches []string
-	passed         bool
+	passed            bool
 }
 
 // sharedCompatCache holds a once-initialized shared cache for compat tests.

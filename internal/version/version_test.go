@@ -179,9 +179,9 @@ func TestString(t *testing.T) {
 
 func TestStabilityAtLeast(t *testing.T) {
 	tests := []struct {
-		version  string
-		minStab  Stability
-		want     bool
+		version string
+		minStab Stability
+		want    bool
 	}{
 		{"1.0.0", Stable, true},
 		{"1.0.0", Dev, true},

@@ -244,9 +244,9 @@ func TestResolveDevDeps(t *testing.T) {
 func TestResolveFiltersPlatformFromTransitive(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "1.0.0", map[string]string{
-		"php":          ">=8.0",
-		"ext-json":     "*",
-		"acme/bar":     "^1.0",
+		"php":      ">=8.0",
+		"ext-json": "*",
+		"acme/bar": "^1.0",
 	})
 	reg.add("acme/bar", "1.0.0", nil)
 
