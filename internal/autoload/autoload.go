@@ -25,10 +25,10 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 	}
 
 	// Collect all autoload data from packages.
-	psr4 := make(map[string][]string)  // namespace -> list of dirs (relative to vendor/)
-	psr0 := make(map[string][]string)  // namespace -> list of dirs
+	psr4 := make(map[string][]string)   // namespace -> list of dirs (relative to vendor/)
+	psr0 := make(map[string][]string)   // namespace -> list of dirs
 	classmap := make(map[string]string) // FQCN -> relative file path
-	var files []fileEntry              // deterministic-keyed file entries
+	var files []fileEntry               // deterministic-keyed file entries
 
 	for _, p := range packages {
 		pkgDir := p.Name // relative to vendor/
@@ -49,15 +49,43 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string) erro
 			}
 		}
 
-		// Classmap
+		// Classmap — always compute pkgPath so PSR-4/PSR-0 scanning can use it too.
+		pkgPath := filepath.Join(vendorDir, pkgDir)
+		excludes := p.Autoload.ExcludeFromClassmap
+
 		if len(p.Autoload.Classmap) > 0 {
-			pkgPath := filepath.Join(vendorDir, pkgDir)
-			scanned, err := ScanClassmap(pkgPath, p.Autoload.Classmap)
+			scanned, err := ScanClassmap(pkgPath, p.Autoload.Classmap, excludes)
 			if err != nil {
 				return fmt.Errorf("autoload: classmap scan %s: %w", p.Name, err)
 			}
 			for fqcn, relPath := range scanned {
 				classmap[fqcn] = filepath.Join(pkgDir, relPath)
+			}
+		}
+
+		// PSR-4: scan each mapped directory for class declarations.
+		for _, paths := range p.Autoload.PSR4 {
+			for _, path := range paths {
+				scanned, err := ScanClassmap(pkgPath, []string{path}, excludes)
+				if err != nil {
+					return fmt.Errorf("autoload: psr-4 classmap scan %s: %w", p.Name, err)
+				}
+				for fqcn, relPath := range scanned {
+					classmap[fqcn] = filepath.Join(pkgDir, relPath)
+				}
+			}
+		}
+
+		// PSR-0: scan each mapped directory for class declarations.
+		for _, paths := range p.Autoload.PSR0 {
+			for _, path := range paths {
+				scanned, err := ScanClassmap(pkgPath, []string{path}, excludes)
+				if err != nil {
+					return fmt.Errorf("autoload: psr-0 classmap scan %s: %w", p.Name, err)
+				}
+				for fqcn, relPath := range scanned {
+					classmap[fqcn] = filepath.Join(pkgDir, relPath)
+				}
 			}
 		}
 

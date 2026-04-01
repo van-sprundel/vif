@@ -15,7 +15,7 @@ class Foo {
 }
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"src/Foo.php"})
+	classmap, err := ScanClassmap(dir, []string{"src/Foo.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -43,7 +43,7 @@ trait BazTrait {}
 enum Color {}
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"lib"})
+	classmap, err := ScanClassmap(dir, []string{"lib"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestScanClassmapNoNamespace(t *testing.T) {
 class LegacyClass {}
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"legacy.php"})
+	classmap, err := ScanClassmap(dir, []string{"legacy.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -89,7 +89,7 @@ abstract class AbstractBase {}
 final class Concrete {}
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"src/Types.php"})
+	classmap, err := ScanClassmap(dir, []string{"src/Types.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestScanClassmapMissingEntry(t *testing.T) {
 	dir := t.TempDir()
 
 	// Should not error on missing paths — just skip them.
-	classmap, err := ScanClassmap(dir, []string{"nonexistent/dir"})
+	classmap, err := ScanClassmap(dir, []string{"nonexistent/dir"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestScanClassmapSkipsNonPhp(t *testing.T) {
 	writePhp(t, dir, "lib/readme.txt", "class NotPhp {}")
 	writePhp(t, dir, "lib/Actual.php", "<?php\nclass Actual {}")
 
-	classmap, err := ScanClassmap(dir, []string{"lib"})
+	classmap, err := ScanClassmap(dir, []string{"lib"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -154,7 +154,7 @@ EOT;
 }
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"src/Generator.php"})
+	classmap, err := ScanClassmap(dir, []string{"src/Generator.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -179,7 +179,7 @@ readonly class Value {
 }
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"src/Value.php"})
+	classmap, err := ScanClassmap(dir, []string{"src/Value.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -203,7 +203,7 @@ HEREDOC;
 }
 `)
 
-	classmap, err := ScanClassmap(dir, []string{"src/Template.php"})
+	classmap, err := ScanClassmap(dir, []string{"src/Template.php"}, nil)
 	if err != nil {
 		t.Fatalf("ScanClassmap: %v", err)
 	}
@@ -213,6 +213,143 @@ HEREDOC;
 	}
 	if _, ok := classmap[`Fake\FakeClass`]; ok {
 		t.Error("FakeClass should not be in classmap (it's inside a heredoc)")
+	}
+}
+
+func TestScanClassmapExcludePatterns(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Foo.php", `<?php
+namespace App;
+
+class Foo {}
+`)
+	// Use "Tests" (capital T) to match the /Tests/ exclusion pattern.
+	writePhp(t, dir, "src/Tests/Bar.php", `<?php
+namespace App\Tests;
+
+class Bar {}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src"}, []string{"/Tests/"})
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\Foo`]; !ok {
+		t.Errorf("expected App\\Foo in classmap, got: %v", classmap)
+	}
+	if _, ok := classmap[`App\Tests\Bar`]; ok {
+		t.Error("App\\Tests\\Bar should be excluded by /Tests/ pattern")
+	}
+}
+
+func TestScanClassmapSkipsAnonymousClass(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Factory.php", `<?php
+namespace App;
+
+class Factory
+{
+    public function make(): object
+    {
+        return new class () {
+        };
+    }
+}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Factory.php"}, nil)
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\Factory`]; !ok {
+		t.Fatalf("missing App\\Factory in classmap: %v", classmap)
+	}
+	if len(classmap) != 1 {
+		t.Fatalf("expected only App\\Factory, got %v", classmap)
+	}
+}
+
+func TestScanClassmapBracketedNamespace(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Bracketed.php", `<?php
+namespace App\Scoped {
+    final class Bracketed {}
+}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Bracketed.php"}, nil)
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\Scoped\Bracketed`]; !ok {
+		t.Fatalf("missing App\\Scoped\\Bracketed in classmap: %v", classmap)
+	}
+}
+
+func TestScanClassmapAttributesAndInlineDeclarations(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Attributed.php", `<?php namespace App\Inline;
+
+#[Example]
+final readonly class Attributed {}
+
+interface Contract {}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Attributed.php"}, nil)
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	for _, want := range []string{`App\Inline\Attributed`, `App\Inline\Contract`} {
+		if _, ok := classmap[want]; !ok {
+			t.Fatalf("missing %s in classmap: %v", want, classmap)
+		}
+	}
+}
+
+func TestScanClassmapSkipsBlockComments(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Commented.php", `<?php
+namespace App;
+
+/*
+class FakeCommentClass {}
+*/
+class RealClass {}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src/Commented.php"}, nil)
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\FakeCommentClass`]; ok {
+		t.Fatalf("FakeCommentClass should not be discovered from a block comment: %v", classmap)
+	}
+	if _, ok := classmap[`App\RealClass`]; !ok {
+		t.Fatalf("missing App\\RealClass in classmap: %v", classmap)
+	}
+}
+
+func TestScanClassmapScansHackFiles(t *testing.T) {
+	dir := t.TempDir()
+	writePhp(t, dir, "src/Hack.hh", `<?hh
+namespace App\Hack;
+
+trait UsesHack {}
+`)
+
+	classmap, err := ScanClassmap(dir, []string{"src"}, nil)
+	if err != nil {
+		t.Fatalf("ScanClassmap: %v", err)
+	}
+
+	if _, ok := classmap[`App\Hack\UsesHack`]; !ok {
+		t.Fatalf("missing App\\Hack\\UsesHack in classmap: %v", classmap)
 	}
 }
 
