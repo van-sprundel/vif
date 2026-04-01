@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -22,12 +23,18 @@ func newRegistry() *registry {
 }
 
 func (r *registry) add(name, version string, require map[string]string) {
+	r.addFull(name, version, require, nil, nil)
+}
+
+func (r *registry) addFull(name, ver string, require, provide, replace map[string]string) {
 	r.packages[name] = append(r.packages[name], packagist.VersionEntry{
 		Name:    name,
-		Version: version,
+		Version: ver,
 		Require: require,
+		Provide: provide,
+		Replace: replace,
 		Dist: packagist.DistEntry{
-			URL:       "https://example.com/" + name + "/" + version + ".zip",
+			URL:       "https://example.com/" + name + "/" + ver + ".zip",
 			Type:      "zip",
 			Reference: "abc123",
 		},
@@ -333,4 +340,187 @@ func names(pkgs []resolver.ResolvedPackage) []string {
 		out[i] = p.Name + "@" + p.Version
 	}
 	return out
+}
+
+// --- provide/replace tests ---
+
+func TestResolveProvide(t *testing.T) {
+	// acme/log requires psr/log-implementation ^1.0
+	// acme/monolog provides psr/log-implementation 1.0.0
+	reg := newRegistry()
+	reg.add("acme/log", "1.0.0", map[string]string{"psr/log-implementation": "^1.0"})
+	reg.addFull("acme/monolog", "2.0.0", nil, map[string]string{"psr/log-implementation": "1.0.0"}, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/monolog": "^2.0",
+			"acme/log":     "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Should resolve acme/monolog and acme/log only — psr/log-implementation
+	// is satisfied by the provide from acme/monolog.
+	if len(resolved) != 2 {
+		t.Fatalf("got %d packages, want 2: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["acme/monolog"]; !ok {
+		t.Error("missing acme/monolog")
+	}
+	if _, ok := byName["acme/log"]; !ok {
+		t.Error("missing acme/log")
+	}
+}
+
+func TestResolveReplace(t *testing.T) {
+	// acme/app requires acme/old-lib ^1.0
+	// acme/new-lib replaces acme/old-lib 1.0.0
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{"acme/old-lib": "^1.0"})
+	reg.addFull("acme/new-lib", "2.0.0", nil, nil, map[string]string{"acme/old-lib": "1.0.0"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/new-lib": "^2.0",
+			"acme/app":     "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 2 {
+		t.Fatalf("got %d packages, want 2: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["acme/new-lib"]; !ok {
+		t.Error("missing acme/new-lib")
+	}
+}
+
+func TestResolveProvideWildcard(t *testing.T) {
+	// Provide with no version (wildcard) should satisfy any constraint.
+	reg := newRegistry()
+	reg.add("acme/consumer", "1.0.0", map[string]string{"acme/contract": "^2.0"})
+	reg.addFull("acme/impl", "1.0.0", nil, map[string]string{"acme/contract": "*"}, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/impl":     "^1.0",
+			"acme/consumer": "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 2 {
+		t.Fatalf("got %d packages, want 2: %v", len(resolved), names(resolved))
+	}
+}
+
+// --- error message tests ---
+
+func TestResolveErrorMessageUnsatisfiable(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": "^99.0"},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "acme/foo") {
+		t.Errorf("error should mention package name, got: %s", errMsg)
+	}
+}
+
+func TestResolveErrorMessageConflict(t *testing.T) {
+	// Create an unsatisfiable scenario: acme/a requires acme/shared ^2.0, acme/b requires acme/shared ^1.0
+	// but acme/a only has one version so backtracking can't help.
+	reg := newRegistry()
+	reg.add("acme/a", "1.0.0", map[string]string{"acme/shared": "^2.0"})
+	reg.add("acme/b", "1.0.0", map[string]string{"acme/shared": "^1.0"})
+	reg.add("acme/shared", "2.0.0", nil)
+	reg.add("acme/shared", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/a": "^1.0",
+			"acme/b": "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "acme/shared") {
+		t.Errorf("error should mention the conflicting package, got: %s", errMsg)
+	}
+}
+
+func TestResolveErrorMessageNotFound(t *testing.T) {
+	reg := newRegistry()
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"nonexistent/pkg": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "nonexistent/pkg") {
+		t.Errorf("error should mention the missing package, got: %s", errMsg)
+	}
 }
