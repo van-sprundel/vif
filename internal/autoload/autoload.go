@@ -65,6 +65,7 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 		if optimized {
 			input.psr4 = flattenAutoloadPaths(p.Autoload.PSR4)
 			input.psr0 = flattenAutoloadPaths(p.Autoload.PSR0)
+			input.psr4Namespaces = p.Autoload.PSR4
 		}
 		scanInputs = append(scanInputs, input)
 
@@ -140,13 +141,14 @@ type fileEntry struct {
 }
 
 type packageScanInput struct {
-	name     string
-	pkgDir   string
-	pkgPath  string
-	classmap []string
-	psr4     []string // only populated in optimized mode
-	psr0     []string // only populated in optimized mode
-	excludes []string
+	name           string
+	pkgDir         string
+	pkgPath        string
+	classmap       []string
+	psr4           []string            // only populated in optimized mode
+	psr0           []string            // only populated in optimized mode
+	psr4Namespaces map[string][]string // namespace -> dirs, for filtering in optimized mode
+	excludes       []string
 }
 
 type packageScanResult struct {
@@ -169,6 +171,37 @@ type packageScanStats struct {
 // fileHash returns the md5 hex of "packageName:filePath", matching Composer's behavior.
 func fileHash(packageName, filePath string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(packageName+":"+filePath)))
+}
+
+// matchesPsr4 checks whether a class FQCN matches its file path according to
+// PSR-4 naming rules. Returns true if the class should be included in the classmap.
+func matchesPsr4(fqcn, filePath, pkgDir string, psr4 map[string][]string) bool {
+	// Sort namespace prefixes by length (longest first) so the most specific match wins.
+	prefixes := make([]string, 0, len(psr4))
+	for ns := range psr4 {
+		prefixes = append(prefixes, ns)
+	}
+	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+
+	for _, nsPrefix := range prefixes {
+		if !strings.HasPrefix(fqcn, nsPrefix) {
+			continue
+		}
+		dirs := psr4[nsPrefix]
+		for _, dir := range dirs {
+			psr4Dir := filepath.Join(pkgDir, dir)
+			if !strings.HasPrefix(filePath, psr4Dir) {
+				continue
+			}
+			// Check that the relative class name maps to the relative file path.
+			relClass := strings.TrimPrefix(fqcn, nsPrefix)
+			expectedRelPath := strings.ReplaceAll(relClass, `\`, string(filepath.Separator)) + ".php"
+			expectedPath := filepath.Join(psr4Dir, expectedRelPath)
+			return filePath == expectedPath
+		}
+	}
+	// Class doesn't match any PSR-4 namespace — shouldn't happen but include it.
+	return true
 }
 
 func flattenAutoloadPaths(m map[string][]string) []string {
@@ -282,7 +315,7 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 	}
 	started := time.Now()
 
-	addEntries := func(label string, entries []string) error {
+	scanAndAdd := func(label string, entries []string) error {
 		if len(entries) == 0 {
 			return nil
 		}
@@ -298,14 +331,28 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 		return nil
 	}
 
-	if err := addEntries("classmap", input.classmap); err != nil {
+	if err := scanAndAdd("classmap", input.classmap); err != nil {
 		return nil, packageScanStats{}, err
 	}
+
 	// PSR-4/PSR-0 scanning only in optimized mode.
-	if err := addEntries("psr-4 classmap", input.psr4); err != nil {
-		return nil, packageScanStats{}, err
+	// For PSR-4, apply namespace-to-filepath filtering: only include classes
+	// whose FQCN maps to the file they were found in per PSR-4 rules.
+	if len(input.psr4) > 0 {
+		scanned, scanStats, err := scanClassmapWithStats(input.pkgPath, input.psr4, input.excludes)
+		if err != nil {
+			return nil, packageScanStats{}, err
+		}
+		stats.files += scanStats.Files
+		stats.symbols += scanStats.Symbols
+		for fqcn, relPath := range scanned {
+			fullPath := filepath.Join(input.pkgDir, relPath)
+			if matchesPsr4(fqcn, fullPath, input.pkgDir, input.psr4Namespaces) {
+				classmap[fqcn] = fullPath
+			}
+		}
 	}
-	if err := addEntries("psr-0 classmap", input.psr0); err != nil {
+	if err := scanAndAdd("psr-0 classmap", input.psr0); err != nil {
 		return nil, packageScanStats{}, err
 	}
 	stats.duration = time.Since(started)
