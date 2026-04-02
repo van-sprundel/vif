@@ -1,3 +1,4 @@
 vif*
 vendor/
 .compat-cache/
+.tmp
