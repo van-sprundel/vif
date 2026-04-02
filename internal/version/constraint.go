@@ -33,15 +33,16 @@ type bound struct {
 }
 
 // ParseConstraint parses a Composer constraint string.
-// Supports: exact, >, >=, <, <=, !=, ^, ~, *, spaces/commas for AND, || for OR.
+// Supports: exact, >, >=, <, <=, !=, ^, ~, *, spaces/commas for AND, || or | for OR.
 func ParseConstraint(s string) (Constraint, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return Constraint{}, fmt.Errorf("constraint: empty string")
 	}
 
-	// Split on || for OR groups.
-	orParts := strings.Split(s, "||")
+	// Composer accepts both || and legacy single | as OR.
+	s = strings.ReplaceAll(s, "||", "|")
+	orParts := strings.Split(s, "|")
 	groups := make([]constraintGroup, 0, len(orParts))
 
 	for _, part := range orParts {
