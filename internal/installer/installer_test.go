@@ -295,6 +295,43 @@ func TestInstallSkipsSourceOnlyPackage(t *testing.T) {
 	}
 }
 
+func TestInstallPathPackageFromLocalDirectory(t *testing.T) {
+	cacheDir := testhelper.TempDir(t, "cache")
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	projectDir := testhelper.TempDir(t, "project")
+	localPkgDir := filepath.Join(projectDir, "packages", "asset")
+	if err := os.MkdirAll(filepath.Join(localPkgDir, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localPkgDir, "src", "Asset.php"), []byte("<?php class Asset {}"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
+	packages := []pkg.Package{
+		{
+			Name:    "urbanheroes-sf/asset",
+			Version: "1.0.0",
+			Type:    "library",
+			Dist:    pkg.Dist{Type: "path", URL: localPkgDir},
+		},
+	}
+
+	inst := installer.New(c)
+	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(vendorDir, "urbanheroes-sf", "asset", "src", "Asset.php")); err != nil {
+		t.Fatalf("path package file missing after install: %v", err)
+	}
+}
+
 func BenchmarkInstall(b *testing.B) {
 	n := 50
 	packages := make([]pkg.Package, n)

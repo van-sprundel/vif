@@ -54,7 +54,9 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	optimized := false
 	prependAutoloader := true
 	var root *autoload.RootAutoload
-	if cj, err := composer.Parse("composer.json"); err == nil {
+	var cj *composer.ComposerJSON
+	if parsed, err := composer.Parse("composer.json"); err == nil {
+		cj = parsed
 		optimized = cj.Config.OptimizeAutoloader
 		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
 		rootMeta = &installer.RootPackage{
@@ -78,6 +80,20 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	}
 
 	allPackages := append(packages, packagesDev...)
+	if cj != nil {
+		projectDir, err := filepath.Abs(".")
+		if err != nil {
+			return fmt.Errorf("project dir: %w", err)
+		}
+		allPackages, err = applyLocalPathPackages(allPackages, cj.Repositories, projectDir)
+		if err != nil {
+			return fmt.Errorf("path repositories: %w", err)
+		}
+	}
+
+	prodCount := len(packages)
+	packages = allPackages[:prodCount]
+	packagesDev = allPackages[prodCount:]
 	total := len(allPackages)
 	if noDev {
 		fmt.Fprintf(w, "Found %d packages (prod only, --no-dev)\n", total)
@@ -111,15 +127,16 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	}
 
 	var cached, downloaded, skipped, failed int
-	var skippedPathPackages []string
+	var skippedUnsupported []string
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
-			if r.Package.Dist.Type == "path" {
-				skippedPathPackages = append(skippedPathPackages, r.Package.Name)
+			pathInstallable := r.Package.Dist.Type == "path" && strings.TrimSpace(r.Package.Dist.URL) != ""
+			if r.Package.Type != "metapackage" && !pathInstallable {
+				skippedUnsupported = append(skippedUnsupported, fmt.Sprintf("%s (type=%s dist=%s url=%q)", r.Package.Name, r.Package.Type, r.Package.Dist.Type, r.Package.Dist.URL))
 			}
 			progress.Increment(r.Package.Name)
 		} else if r.FromCache {
@@ -135,12 +152,12 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	if failed > 0 {
 		return fmt.Errorf("%d package(s) failed to download", failed)
 	}
-	if len(skippedPathPackages) > 0 {
-		sort.Strings(skippedPathPackages)
+	if len(skippedUnsupported) > 0 {
+		sort.Strings(skippedUnsupported)
 		return fmt.Errorf(
-			"path repositories are not supported yet; skipped %d path package(s): %s",
-			len(skippedPathPackages),
-			strings.Join(skippedPathPackages, ", "),
+			"non-downloadable non-metapackage dependencies are not supported yet; blocked on %d package(s): %s",
+			len(skippedUnsupported),
+			strings.Join(skippedUnsupported, ", "),
 		)
 	}
 

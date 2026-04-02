@@ -137,6 +137,14 @@ func TestRequiresDownload(t *testing.T) {
 				Type: "library",
 				Dist: pkg.Dist{Type: "path", URL: "../local"},
 			},
+			want: true,
+		},
+		{
+			name: "path package without URL",
+			pkg: pkg.Package{
+				Type: "library",
+				Dist: pkg.Dist{Type: "path"},
+			},
 			want: false,
 		},
 		{

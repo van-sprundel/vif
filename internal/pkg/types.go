@@ -98,8 +98,11 @@ func normalizeStringMap(raw map[string]json.RawMessage) (map[string][]string, er
 // RequiresDownload reports whether a package should be fetched into the cache.
 // Packages without a dist URL are source-only and are skipped for now.
 func RequiresDownload(p Package) bool {
-	if p.Type == "metapackage" || p.Dist.Type == "path" {
+	if p.Type == "metapackage" {
 		return false
+	}
+	if p.Dist.Type == "path" {
+		return strings.TrimSpace(p.Dist.URL) != ""
 	}
 	return strings.TrimSpace(p.Dist.URL) != ""
 }
