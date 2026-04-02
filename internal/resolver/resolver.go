@@ -157,6 +157,7 @@ type resolver struct {
 	minimumStability version.Stability
 	versionCache     map[string][]candidate
 	lastConflict     *conflict
+	terminalErr      error
 	depth            int
 }
 
@@ -175,6 +176,9 @@ func (r *resolver) recordConflict(packageName string, constraint version.Constra
 // solve tries to satisfy all requirements using recursive backtracking.
 // Returns true if a solution was found, updating state in place.
 func (r *resolver) solve(s *state, reqs []requirement) bool {
+	if !r.checkContext() {
+		return false
+	}
 	if len(reqs) == 0 {
 		return true
 	}
@@ -255,6 +259,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	// Try each candidate version (highest first).
 	var lastRejectedVersion string
 	for _, c := range candidates {
+		if !r.checkContext() {
+			return false
+		}
 		if !req.constraint.Matches(c.version) {
 			lastRejectedVersion = c.entry.Version
 			continue
@@ -294,10 +301,23 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 }
 
 func (r *resolver) buildError(s *state) error {
+	if r.terminalErr != nil {
+		return r.terminalErr
+	}
 	if r.lastConflict != nil {
 		return fmt.Errorf("resolver: %s", r.lastConflict.reason)
 	}
 	return fmt.Errorf("resolver: failed to resolve dependencies")
+}
+
+func (r *resolver) checkContext() bool {
+	if err := r.ctx.Err(); err != nil {
+		if r.terminalErr == nil {
+			r.terminalErr = fmt.Errorf("resolver: %w", err)
+		}
+		return false
+	}
+	return true
 }
 
 func transitiveReqs(entry packagist.VersionEntry, dev bool) []requirement {
@@ -318,6 +338,9 @@ func transitiveReqs(entry packagist.VersionEntry, dev bool) []requirement {
 }
 
 func (r *resolver) getCandidates(name string) ([]candidate, error) {
+	if !r.checkContext() {
+		return nil, r.terminalErr
+	}
 	if cached, ok := r.versionCache[name]; ok {
 		return cached, nil
 	}

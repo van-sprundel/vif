@@ -243,6 +243,34 @@ func TestInstallEmptyPackageList(t *testing.T) {
 	}
 }
 
+func TestInstallSkipsSourceOnlyPackage(t *testing.T) {
+	cacheDir := t.TempDir()
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	packages := []pkg.Package{
+		{
+			Name:    "vendor/source-only",
+			Version: "1.0.0",
+			Type:    "library",
+			Dist:    pkg.Dist{Type: "zip"},
+		},
+	}
+
+	inst := installer.New(c)
+	if err := inst.Install(packages, nil, vendorDir); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(vendorDir, "vendor", "source-only")); !os.IsNotExist(err) {
+		t.Fatalf("source-only package should not be installed, stat err = %v", err)
+	}
+}
+
 func BenchmarkInstall(b *testing.B) {
 	n := 50
 	packages := make([]pkg.Package, n)

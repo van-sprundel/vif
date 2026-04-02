@@ -42,9 +42,8 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 
 	// Link each package from cache to vendor.
 	for _, p := range all {
-		// Skip path-type packages — they're local and not in the cache.
-		// Skip metapackages — they have no code to install.
-		if p.Dist.Type == "path" || p.Type == "metapackage" {
+		// Skip packages that do not have a cacheable dist archive yet.
+		if !pkg.RequiresDownload(p) {
 			continue
 		}
 

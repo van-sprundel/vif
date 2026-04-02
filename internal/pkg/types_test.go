@@ -116,3 +116,52 @@ func TestAutoloadUnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestRequiresDownload(t *testing.T) {
+	tests := []struct {
+		name string
+		pkg  pkg.Package
+		want bool
+	}{
+		{
+			name: "dist package with URL",
+			pkg: pkg.Package{
+				Type: "library",
+				Dist: pkg.Dist{Type: "zip", URL: "https://example.com/pkg.zip"},
+			},
+			want: true,
+		},
+		{
+			name: "path package",
+			pkg: pkg.Package{
+				Type: "library",
+				Dist: pkg.Dist{Type: "path", URL: "../local"},
+			},
+			want: false,
+		},
+		{
+			name: "metapackage",
+			pkg: pkg.Package{
+				Type: "metapackage",
+				Dist: pkg.Dist{Type: "zip", URL: "https://example.com/meta.zip"},
+			},
+			want: false,
+		},
+		{
+			name: "source only package without dist URL",
+			pkg: pkg.Package{
+				Type: "library",
+				Dist: pkg.Dist{Type: "zip"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pkg.RequiresDownload(tc.pkg); got != tc.want {
+				t.Fatalf("RequiresDownload() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
