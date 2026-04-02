@@ -327,6 +327,52 @@ func TestGenerateClassLoaderEmbedded(t *testing.T) {
 	}
 }
 
+func TestGenerateAutoloadRuntimeWhenSymfonyRuntimePresent(t *testing.T) {
+	vendorDir := testhelper.TempDir(t, "vendor")
+
+	packages := []pkg.Package{
+		{
+			Name: "symfony/runtime",
+		},
+	}
+
+	if err := Generate(vendorDir, packages, "runtimehash", false, nil); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	runtimePath := filepath.Join(vendorDir, "autoload_runtime.php")
+	data, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatalf("read autoload_runtime.php: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "Symfony\\\\Component\\\\Runtime\\\\SymfonyRuntime") {
+		t.Fatalf("autoload_runtime.php missing Symfony runtime class: %s", content)
+	}
+	if !strings.Contains(content, "require_once __DIR__.'/autoload.php'") {
+		t.Fatalf("autoload_runtime.php missing autoload require: %s", content)
+	}
+}
+
+func TestGenerateNoAutoloadRuntimeWithoutSymfonyRuntime(t *testing.T) {
+	vendorDir := testhelper.TempDir(t, "vendor")
+
+	packages := []pkg.Package{
+		{
+			Name: "acme/lib",
+		},
+	}
+
+	if err := Generate(vendorDir, packages, "noruntimehash", false, nil); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(vendorDir, "autoload_runtime.php")); !os.IsNotExist(err) {
+		t.Fatalf("autoload_runtime.php should not exist without symfony/runtime, stat err=%v", err)
+	}
+}
+
 func TestFileHash(t *testing.T) {
 	// Deterministic: same input always gives same output.
 	h1 := fileHash("acme/lib", "src/helpers.php")
