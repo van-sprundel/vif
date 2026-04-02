@@ -39,7 +39,11 @@ func (p *Progress) Increment(name string) {
 		return
 	}
 	p.mu.Lock()
-	fmt.Fprintf(p.w, "\r\033[K%s [%d/%d]", p.label, n, p.total)
+	if p.total > 0 {
+		fmt.Fprintf(p.w, "\r\033[K%s [%d/%d]", p.label, n, p.total)
+	} else {
+		fmt.Fprintf(p.w, "\r\033[K%s [%d]", p.label, n)
+	}
 	p.dirty = true
 	p.mu.Unlock()
 }

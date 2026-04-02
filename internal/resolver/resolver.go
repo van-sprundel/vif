@@ -23,11 +23,17 @@ type ResolvedPackage struct {
 // Resolve resolves all dependencies from a composer.json using the given Packagist client.
 // Returns a flat list of all resolved packages (including transitive dependencies).
 func Resolve(ctx context.Context, cj *composer.ComposerJSON, client *packagist.Client) ([]ResolvedPackage, error) {
+	return ResolveWithProgress(ctx, cj, client, nil)
+}
+
+// ResolveWithProgress resolves dependencies and reports each unique package lookup.
+func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client *packagist.Client, progress func(string)) ([]ResolvedPackage, error) {
 	r := &resolver{
 		ctx:              ctx,
 		client:           client,
 		minimumStability: parseStability(cj.MinimumStability),
 		versionCache:     make(map[string][]candidate),
+		progress:         progress,
 	}
 
 	// Collect all root requirements (prod + dev).
@@ -158,6 +164,7 @@ type resolver struct {
 	versionCache     map[string][]candidate
 	lastConflict     *conflict
 	terminalErr      error
+	progress         func(string)
 	depth            int
 }
 
@@ -188,6 +195,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 
 	req := reqs[0]
 	rest := reqs[1:]
+	req, rest, pendingConstraints := mergePendingRequirements(req, rest)
 
 	// Skip platform packages that slipped through.
 	if pkg.IsPlatformPackage(req.name) {
@@ -200,9 +208,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		if err != nil {
 			return false
 		}
-		if req.constraint.Matches(v) {
+		if matchesAll(v, pendingConstraints) {
 			// Compatible. Track constraint and continue.
-			s.constraints[req.name] = append(s.constraints[req.name], req.constraint)
+			s.constraints[req.name] = append(s.constraints[req.name], pendingConstraints...)
 			if existing.dev && !req.dev {
 				existing.dev = false
 				s.resolved[req.name] = existing
@@ -226,7 +234,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 			}
 			if provVersion != "" && provVersion != "*" {
 				v, err := version.Parse(provVersion)
-				if err == nil && !req.constraint.Matches(v) {
+				if err == nil && !matchesAll(v, pendingConstraints) {
 					r.recordConflict(req.name, req.constraint,
 						fmt.Sprintf("%s provides %s@%s which does not match %s", prov.realName, req.name, provVersion, req.constraint))
 					return false
@@ -262,7 +270,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		if !r.checkContext() {
 			return false
 		}
-		if !req.constraint.Matches(c.version) {
+		if !matchesAll(c.version, pendingConstraints) {
 			lastRejectedVersion = c.entry.Version
 			continue
 		}
@@ -275,7 +283,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		// Try this candidate: snapshot state, resolve transitive deps.
 		snapshot := s.clone()
 		s.resolved[req.name] = resolvedEntry{entry: c.entry, dev: req.dev}
-		s.constraints[req.name] = append(s.constraints[req.name], req.constraint)
+		s.constraints[req.name] = append(s.constraints[req.name], pendingConstraints...)
 		s.registerProviders(c.entry)
 
 		// Gather transitive deps.
@@ -344,6 +352,9 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 	if cached, ok := r.versionCache[name]; ok {
 		return cached, nil
 	}
+	if r.progress != nil {
+		r.progress(name)
+	}
 
 	versions, err := r.client.GetPackage(r.ctx, name)
 	if err != nil {
@@ -369,6 +380,23 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 
 	r.versionCache[name] = candidates
 	return candidates, nil
+}
+
+func mergePendingRequirements(req requirement, rest []requirement) (requirement, []requirement, []version.Constraint) {
+	constraints := []version.Constraint{req.constraint}
+	filtered := rest[:0]
+
+	for _, other := range rest {
+		if other.name != req.name {
+			filtered = append(filtered, other)
+			continue
+		}
+		constraints = append(constraints, other.constraint)
+		req.dev = req.dev && other.dev
+		req.deferred = req.deferred || other.deferred
+	}
+
+	return req, filtered, constraints
 }
 
 func matchesAll(v version.Version, constraints []version.Constraint) bool {
