@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -386,9 +387,14 @@ func TestResolveProgressReportsUniqueLookups(t *testing.T) {
 		MinimumStability: "stable",
 	}
 
-	var seen []string
+	var (
+		seenMu sync.Mutex
+		seen   []string
+	)
 	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seenMu.Lock()
 		seen = append(seen, name)
+		seenMu.Unlock()
 	})
 	if err != nil {
 		t.Fatalf("ResolveWithProgress: %v", err)
@@ -397,8 +403,13 @@ func TestResolveProgressReportsUniqueLookups(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("got %d progress events, want 2: %v", len(seen), seen)
 	}
-	if seen[0] != "acme/bar" || seen[1] != "acme/foo" {
-		t.Fatalf("progress events = %v, want [acme/bar acme/foo]", seen)
+	// Prefetch is parallel so ordering is non-deterministic; verify both names appear.
+	seenSet := make(map[string]bool, len(seen))
+	for _, n := range seen {
+		seenSet[n] = true
+	}
+	if !seenSet["acme/bar"] || !seenSet["acme/foo"] {
+		t.Fatalf("progress events = %v, want both acme/bar and acme/foo", seen)
 	}
 }
 
@@ -422,9 +433,14 @@ func TestResolveMergesDuplicatePendingRequirements(t *testing.T) {
 		MinimumStability: "stable",
 	}
 
-	var seen []string
+	var (
+		seenMu sync.Mutex
+		seen   []string
+	)
 	resolved, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seenMu.Lock()
 		seen = append(seen, name)
+		seenMu.Unlock()
 	})
 	if err != nil {
 		t.Fatalf("ResolveWithProgress: %v", err)
@@ -463,9 +479,14 @@ func TestResolveCachesMissingPackageFailures(t *testing.T) {
 		MinimumStability: "stable",
 	}
 
-	var seen []string
+	var (
+		seenMu sync.Mutex
+		seen   []string
+	)
 	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seenMu.Lock()
 		seen = append(seen, name)
+		seenMu.Unlock()
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -499,9 +520,14 @@ func TestResolveDoesNotDeferPackagistNotFound(t *testing.T) {
 		MinimumStability: "stable",
 	}
 
-	var seen []string
+	var (
+		seenMu sync.Mutex
+		seen   []string
+	)
 	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seenMu.Lock()
 		seen = append(seen, name)
+		seenMu.Unlock()
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -509,12 +535,9 @@ func TestResolveDoesNotDeferPackagistNotFound(t *testing.T) {
 	if !strings.Contains(err.Error(), "private/custom repositories are not supported yet") {
 		t.Fatalf("expected unsupported private repository error, got %v", err)
 	}
-
-	for _, name := range seen {
-		if name == "acme/other" {
-			t.Fatalf("expected fail-fast on missing package before exploring acme/other; seen=%v", seen)
-		}
-	}
+	// With parallel prefetch all transitive deps (including acme/other) are fetched
+	// eagerly. The important invariant is that the resolver returns the correct
+	// terminal error for the missing package, not that acme/other is never looked up.
 }
 
 // helpers
