@@ -62,8 +62,7 @@ var sharedCompatCache struct {
 }
 
 // getSharedCache returns a shared cache dir, initialising it once per test run.
-// Set VIF_COMPAT_CACHE_DIR to use a specific directory (e.g. on a disk-backed
-// filesystem instead of /tmp which may be a small tmpfs).
+// Set VIF_COMPAT_CACHE_DIR to override the default repo-local cache location.
 func getSharedCache(t *testing.T) (string, error) {
 	t.Helper()
 	sharedCompatCache.once.Do(func() {
@@ -71,6 +70,12 @@ func getSharedCache(t *testing.T) (string, error) {
 		if base != "" {
 			if err := os.MkdirAll(base, 0o755); err != nil {
 				sharedCompatCache.initErr = fmt.Errorf("create cache base dir %s: %w", base, err)
+				return
+			}
+		} else {
+			base = filepath.Join(".", ".tmp", "vif-compat-cache")
+			if err := os.MkdirAll(base, 0o755); err != nil {
+				sharedCompatCache.initErr = fmt.Errorf("create default cache base dir %s: %w", base, err)
 				return
 			}
 		}
