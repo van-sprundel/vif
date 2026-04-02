@@ -29,12 +29,32 @@ func Resolve(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fe
 
 // ResolveWithProgress resolves dependencies and reports each unique package lookup.
 func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher, progress func(string)) ([]ResolvedPackage, error) {
+	minimumStability := parseStability(cj.MinimumStability)
+
+	// Collect root package names for the parallel prefetch pass.
+	var rootNames []string
+	for name := range cj.NonPlatformRequire() {
+		rootNames = append(rootNames, name)
+	}
+	for name := range cj.NonPlatformRequireDev() {
+		rootNames = append(rootNames, name)
+	}
+
+	// Prefetch all reachable metadata in parallel before the sequential solve
+	// phase, so getCandidates hits the cache for every package.
+	prefetched := prefetchMetadata(ctx, client, rootNames, progress)
+
+	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
+	populateVersionCache(versionCache, prefetched, minimumStability)
+
 	r := &resolver{
 		ctx:              ctx,
 		client:           client,
-		minimumStability: parseStability(cj.MinimumStability),
-		versionCache:     make(map[string]candidateCacheEntry),
-		progress:         progress,
+		minimumStability: minimumStability,
+		versionCache:     versionCache,
+		// progress is nil during solve to avoid double-reporting; all lookups
+		// were already reported during the prefetch pass above.
+		progress: nil,
 	}
 
 	// Collect all root requirements (prod + dev).
