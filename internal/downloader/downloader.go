@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/van-sprundel/vif/internal/cache"
+	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/pkg"
 )
 
@@ -32,6 +33,7 @@ type Downloader struct {
 	cache   *cache.Cache
 	workers int
 	client  *http.Client
+	auth    *composerauth.Config
 }
 
 // New creates a Downloader with the given cache and worker count.
@@ -44,6 +46,18 @@ func New(c *cache.Cache, workers int) *Downloader {
 		cache:   c,
 		workers: workers,
 		client:  &http.Client{},
+	}
+}
+
+// SetAuth configures Composer-style HTTP auth for package archive downloads.
+func (d *Downloader) SetAuth(cfg *composerauth.Config) {
+	d.auth = cfg
+}
+
+// SetHTTPClient overrides the HTTP client used for downloads.
+func (d *Downloader) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		d.client = client
 	}
 }
 
@@ -124,6 +138,7 @@ func (d *Downloader) fetch(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	d.auth.ApplyRequest(req)
 
 	resp, err := d.client.Do(req)
 	if err != nil {

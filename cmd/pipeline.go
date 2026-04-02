@@ -66,6 +66,11 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 
 	// Download.
 	dl := downloader.New(c, 0)
+	auth, err := loadComposerAuth()
+	if err != nil {
+		return err
+	}
+	dl.SetAuth(auth)
 	progress := ui.NewProgress(w, "Downloading", total, verbose)
 
 	results, err := dl.Download(ctx, allPackages)
