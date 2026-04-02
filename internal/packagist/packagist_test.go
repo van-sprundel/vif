@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/packagist"
 )
 
@@ -217,6 +218,72 @@ func TestClientCachesNotFound(t *testing.T) {
 
 	if requestCount != 1 {
 		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
+}
+
+func TestClientAppliesComposerAuth(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-123" {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	client.SetAuth(&composerauth.Config{
+		Bearer: map[string]string{
+			strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://"): "token-123",
+		},
+	})
+
+	if _, err := client.GetPackage(context.Background(), "acme/foo"); err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+}
+
+func TestChainFallsBackAcrossRepositories(t *testing.T) {
+	privateResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"urbanheroes-sf/asset": {
+				{
+					Name:    "urbanheroes-sf/asset",
+					Version: "1.0.0",
+				},
+			},
+		},
+	}
+	privateData, _ := json.Marshal(privateResp)
+
+	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/urbanheroes-sf/asset.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(privateData)
+	}))
+	defer privateSrv.Close()
+
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer publicSrv.Close()
+
+	chain := packagist.NewChain(
+		packagist.NewClient(privateSrv.URL),
+		packagist.NewClient(publicSrv.URL),
+	)
+
+	versions, err := chain.GetPackage(context.Background(), "urbanheroes-sf/asset")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Name != "urbanheroes-sf/asset" {
+		t.Fatalf("unexpected versions: %+v", versions)
 	}
 }
 

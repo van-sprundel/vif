@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
-	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
 	"github.com/van-sprundel/vif/internal/ui"
 )
@@ -44,7 +43,10 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	fmt.Fprintf(w, "Resolving dependencies for %s...\n", cj.Name)
 
 	// 2. Resolve dependencies.
-	client := packagist.NewClient("https://repo.packagist.org")
+	client, err := metadataClient(cj)
+	if err != nil {
+		return err
+	}
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
 	resolved, err := resolver.ResolveWithProgress(ctx, cj, client, func(name string) {
 		progress.Increment(name)
