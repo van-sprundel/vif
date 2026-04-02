@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,7 +33,7 @@ func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client 
 		ctx:              ctx,
 		client:           client,
 		minimumStability: parseStability(cj.MinimumStability),
-		versionCache:     make(map[string][]candidate),
+		versionCache:     make(map[string]candidateCacheEntry),
 		progress:         progress,
 	}
 
@@ -90,6 +91,11 @@ type resolvedEntry struct {
 type candidate struct {
 	entry   packagist.VersionEntry
 	version version.Version
+}
+
+type candidateCacheEntry struct {
+	candidates []candidate
+	err        error
 }
 
 // provider tracks which real package provides a virtual package.
@@ -161,7 +167,7 @@ type resolver struct {
 	ctx              context.Context
 	client           *packagist.Client
 	minimumStability version.Stability
-	versionCache     map[string][]candidate
+	versionCache     map[string]candidateCacheEntry
 	lastConflict     *conflict
 	terminalErr      error
 	progress         func(string)
@@ -247,9 +253,14 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	// Fetch candidates from packagist.
 	candidates, err := r.getCandidates(req.name)
 	if err != nil || len(candidates) == 0 {
-		// Package not found on packagist. If not yet deferred, push to
-		// the end of the queue — a later-resolved package may provide/replace it.
-		if !req.deferred && len(rest) > 0 {
+		if err != nil && errors.Is(err, packagist.ErrPackageNotFound) {
+			r.terminalErr = fmt.Errorf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", req.name)
+			return false
+		}
+		// Non-terminal fetch failures get one defer pass in case a later
+		// resolved package provides/replaces this name. A Packagist 404 is
+		// terminal for Phase 1 and should fail fast.
+		if err != nil && !errors.Is(err, packagist.ErrPackageNotFound) && !req.deferred && len(rest) > 0 {
 			deferred := req
 			deferred.deferred = true
 			return r.solve(s, append(rest, deferred))
@@ -292,6 +303,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 
 		if r.solve(s, allReqs) {
 			return true
+		}
+		if r.terminalErr != nil {
+			return false
 		}
 
 		// Backtrack: restore state.
@@ -350,7 +364,7 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		return nil, r.terminalErr
 	}
 	if cached, ok := r.versionCache[name]; ok {
-		return cached, nil
+		return cached.candidates, cached.err
 	}
 	if r.progress != nil {
 		r.progress(name)
@@ -358,7 +372,9 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 
 	versions, err := r.client.GetPackage(r.ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("resolver: fetch %s: %w", name, err)
+		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
+		r.versionCache[name] = candidateCacheEntry{err: cachedErr}
+		return nil, cachedErr
 	}
 
 	var candidates []candidate
@@ -378,7 +394,7 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		return version.Compare(candidates[i].version, candidates[j].version) > 0
 	})
 
-	r.versionCache[name] = candidates
+	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
 	return candidates, nil
 }
 
