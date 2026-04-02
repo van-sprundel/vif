@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/cache"
+	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/pkg"
 )
@@ -221,6 +223,75 @@ func TestDownloadCacheHit(t *testing.T) {
 	if got := requestCount.Load(); got != 1 {
 		t.Errorf("after second download: %d requests, want 1", got)
 	}
+}
+
+func TestDownloadUsesComposerAuth(t *testing.T) {
+	zipData := makeZip(t, map[string]string{
+		"src/Auth.php": "<?php class Auth {}",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Private-Token"); got != "token-123" {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	targetURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("Parse server URL: %v", err)
+	}
+
+	packages := []pkg.Package{{
+		Name:    "vendor/auth",
+		Version: "1.0.0",
+		Dist: pkg.Dist{
+			Type:      "zip",
+			URL:       "https://gitlab.com/api/v4/projects/1/packages/composer/archives/vendor/pkg.zip?sha=abc",
+			Reference: "ref",
+		},
+	}}
+
+	d := downloader.New(c, 1)
+	d.SetAuth(&composerauth.Config{
+		GitLabToken: map[string]string{"gitlab.com": "token-123"},
+	})
+	d.SetHTTPClient(&http.Client{
+		Transport: rewriteTransport{
+			target: targetURL,
+			base:   srv.Client().Transport,
+		},
+	})
+
+	results, err := d.Download(context.Background(), packages)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("result error: %v", results[0].Err)
+	}
+}
+
+type rewriteTransport struct {
+	target *url.URL
+	base   http.RoundTripper
+}
+
+func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = t.target.Scheme
+	clone.URL.Host = t.target.Host
+	clone.Host = req.URL.Host
+	return t.base.RoundTrip(clone)
 }
 
 func TestDownloadShasumMismatch(t *testing.T) {

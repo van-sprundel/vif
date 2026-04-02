@@ -75,6 +75,11 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 
 	// 3. Download.
 	dl := downloader.New(c, 0) // 0 = auto workers
+	auth, err := loadComposerAuth()
+	if err != nil {
+		return err
+	}
+	dl.SetAuth(auth)
 	progress := ui.NewProgress(w, "Downloading", total, verbose)
 
 	results, err := dl.Download(ctx, allPackages)
