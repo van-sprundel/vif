@@ -162,10 +162,16 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("parse lockfile: %w", err)
 	}
 
-	// Check composer.json for optimize-autoloader config.
+	// Check composer.json for optimize-autoloader config and root package metadata.
 	optimized := false
+	var root *installer.RootPackage
 	if cj, err := composer.Parse(filepath.Join(dir, "composer.json")); err == nil {
 		optimized = cj.Config.OptimizeAutoloader
+		root = &installer.RootPackage{
+			Name:    cj.Name,
+			Version: cj.Version,
+			Type:    cj.Type,
+		}
 	}
 
 	allPackages := append(lf.Packages, lf.PackagesDev...)
@@ -189,7 +195,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 
 	vendorDir := filepath.Join(dir, "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir); err != nil {
+	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, root); err != nil {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
