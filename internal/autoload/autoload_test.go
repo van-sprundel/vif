@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 func TestGenerateCreatesAllFiles(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	packages := []pkg.Package{
 		{
@@ -49,7 +50,7 @@ func TestGenerateCreatesAllFiles(t *testing.T) {
 }
 
 func TestGenerateAutoloadPHP(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	if err := Generate(vendorDir, nil, "abc123", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -70,7 +71,7 @@ func TestGenerateAutoloadPHP(t *testing.T) {
 }
 
 func TestGeneratePSR4(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	packages := []pkg.Package{
 		{
@@ -125,7 +126,7 @@ func TestGeneratePSR4(t *testing.T) {
 }
 
 func TestGeneratePSR0(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	packages := []pkg.Package{
 		{
@@ -157,7 +158,7 @@ func TestGeneratePSR0(t *testing.T) {
 }
 
 func TestGenerateFiles(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	packages := []pkg.Package{
 		{
@@ -195,7 +196,7 @@ func TestGenerateFiles(t *testing.T) {
 }
 
 func TestGenerateNoFiles(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	packages := []pkg.Package{
 		{
@@ -220,7 +221,7 @@ func TestGenerateNoFiles(t *testing.T) {
 }
 
 func TestGenerateClassmap(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	// Create a fake package with PHP files to scan.
 	pkgDir := filepath.Join(vendorDir, "acme/mapper", "lib")
@@ -263,7 +264,7 @@ class Thing {}
 }
 
 func TestGeneratePSR4NotInClassmap(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	// Create a fake package with only PSR-4 autoload (no explicit classmap).
 	// PSR-4 classes should NOT appear in classmap in non-optimized mode —
@@ -307,7 +308,7 @@ class Widget {}
 }
 
 func TestGenerateClassLoaderEmbedded(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	if err := Generate(vendorDir, nil, "h6", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -347,7 +348,7 @@ func TestFileHash(t *testing.T) {
 }
 
 func TestGenerateRootAutoload(t *testing.T) {
-	vendorDir := t.TempDir()
+	vendorDir := testhelper.TempDir(t, "vendor")
 
 	// Vendor package.
 	packages := []pkg.Package{
@@ -434,7 +435,7 @@ func BenchmarkGenerate(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vendorDir := filepath.Join(b.TempDir(), "vendor")
+		vendorDir := filepath.Join(testhelper.TempDir(b, "vendor"), "vendor")
 		if err := Generate(vendorDir, packages, "benchhash", false, nil); err != nil {
 			b.Fatalf("Generate: %v", err)
 		}

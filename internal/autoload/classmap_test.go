@@ -4,10 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 func TestScanClassmapSingleFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Foo.php", `<?php
 namespace App\Models;
 
@@ -29,7 +31,7 @@ class Foo {
 }
 
 func TestScanClassmapDirectory(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "lib/Bar.php", `<?php
 namespace Lib;
 
@@ -65,7 +67,7 @@ enum Color {}
 }
 
 func TestScanClassmapNoNamespace(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "legacy.php", `<?php
 class LegacyClass {}
 `)
@@ -81,7 +83,7 @@ class LegacyClass {}
 }
 
 func TestScanClassmapAbstractFinal(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Types.php", `<?php
 namespace App;
 
@@ -102,7 +104,7 @@ final class Concrete {}
 }
 
 func TestScanClassmapMissingEntry(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 
 	// Should not error on missing paths — just skip them.
 	classmap, err := ScanClassmap(dir, []string{"nonexistent/dir"}, nil)
@@ -115,7 +117,7 @@ func TestScanClassmapMissingEntry(t *testing.T) {
 }
 
 func TestScanClassmapSkipsNonPhp(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "lib/readme.txt", "class NotPhp {}")
 	writePhp(t, dir, "lib/Actual.php", "<?php\nclass Actual {}")
 
@@ -133,7 +135,7 @@ func TestScanClassmapSkipsNonPhp(t *testing.T) {
 }
 
 func TestScanClassmapSkipsHeredoc(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	// Simulates PHPUnit's Generator.php pattern: trait declarations inside heredoc strings.
 	writePhp(t, dir, "src/Generator.php", `<?php
 namespace App\Mock;
@@ -170,7 +172,7 @@ EOT;
 }
 
 func TestScanClassmapReadonlyClass(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Value.php", `<?php
 namespace App\DTO;
 
@@ -190,7 +192,7 @@ readonly class Value {
 }
 
 func TestScanClassmapSkipsNowdoc(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Template.php", `<?php
 namespace App;
 
@@ -217,7 +219,7 @@ HEREDOC;
 }
 
 func TestScanClassmapExcludePatterns(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Foo.php", `<?php
 namespace App;
 
@@ -244,7 +246,7 @@ class Bar {}
 }
 
 func TestScanClassmapSkipsAnonymousClass(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Factory.php", `<?php
 namespace App;
 
@@ -272,7 +274,7 @@ class Factory
 }
 
 func TestScanClassmapBracketedNamespace(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Bracketed.php", `<?php
 namespace App\Scoped {
     final class Bracketed {}
@@ -290,7 +292,7 @@ namespace App\Scoped {
 }
 
 func TestScanClassmapAttributesAndInlineDeclarations(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Attributed.php", `<?php namespace App\Inline;
 
 #[Example]
@@ -312,7 +314,7 @@ interface Contract {}
 }
 
 func TestScanClassmapSkipsBlockComments(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Commented.php", `<?php
 namespace App;
 
@@ -336,7 +338,7 @@ class RealClass {}
 }
 
 func TestScanClassmapScansHackFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "classmap")
 	writePhp(t, dir, "src/Hack.hh", `<?hh
 namespace App\Hack;
 

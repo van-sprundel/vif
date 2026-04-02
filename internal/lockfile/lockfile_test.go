@@ -15,6 +15,7 @@ import (
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/pkg"
 	"github.com/van-sprundel/vif/internal/resolver"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // fixtureFile returns the absolute path to testdata/fixtures/composer.lock
@@ -289,7 +290,7 @@ func contains(items []string, want string) bool {
 // writeTemp writes content to a temp file and returns its path.
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writeTemp: %v", err)
@@ -298,7 +299,7 @@ func writeTemp(t *testing.T, content string) string {
 }
 
 func TestGenerate(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")
 
 	cj := &composer.ComposerJSON{
@@ -428,7 +429,7 @@ func TestGenerate(t *testing.T) {
 }
 
 func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")
 
 	existing := `{
@@ -535,7 +536,7 @@ func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
 }
 
 func TestGenerateEmpty(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")
 
 	cj := &composer.ComposerJSON{

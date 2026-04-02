@@ -22,6 +22,7 @@ import (
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // compatFixturesDir is where compat fixture subdirectories live.
@@ -62,22 +63,14 @@ var sharedCompatCache struct {
 }
 
 // getSharedCache returns a shared cache dir, initialising it once per test run.
-// Set VIF_COMPAT_CACHE_DIR to override the default repo-local cache location.
+// Set VIF_TEST_TEMP_DIR or VIF_COMPAT_CACHE_DIR to override the default repo-local cache location.
 func getSharedCache(t *testing.T) (string, error) {
 	t.Helper()
 	sharedCompatCache.once.Do(func() {
-		base := os.Getenv("VIF_COMPAT_CACHE_DIR")
-		if base != "" {
-			if err := os.MkdirAll(base, 0o755); err != nil {
-				sharedCompatCache.initErr = fmt.Errorf("create cache base dir %s: %w", base, err)
-				return
-			}
-		} else {
-			base = filepath.Join(".", ".tmp", "vif-compat-cache")
-			if err := os.MkdirAll(base, 0o755); err != nil {
-				sharedCompatCache.initErr = fmt.Errorf("create default cache base dir %s: %w", base, err)
-				return
-			}
+		base, err := testhelper.GetTestTempBase()
+		if err != nil {
+			sharedCompatCache.initErr = err
+			return
 		}
 		dir, err := os.MkdirTemp(base, "vif-compat-cache-*")
 		if err != nil {
@@ -88,6 +81,12 @@ func getSharedCache(t *testing.T) (string, error) {
 		t.Cleanup(func() { os.RemoveAll(dir) })
 	})
 	return sharedCompatCache.dir, sharedCompatCache.initErr
+}
+
+// compatTempDir creates a per-test working directory on the same filesystem as
+// the shared cache so installer hardlinks do not degrade into cross-device copies.
+func compatTempDir(t *testing.T, prefix string) string {
+	return testhelper.TempDir(t, prefix)
 }
 
 // discoverCompatFixtures returns a sorted list of fixture directory names under
@@ -480,7 +479,7 @@ func TestCompat(t *testing.T) {
 			fixtureDir := filepath.Join(compatFixturesDir, name)
 
 			// --- Composer side ---
-			composerDir := t.TempDir()
+			composerDir := compatTempDir(t, "composer-*")
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(composerDir, "composer.json"))
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(composerDir, "composer.lock"))
 
@@ -490,7 +489,7 @@ func TestCompat(t *testing.T) {
 			}
 
 			// --- vif side ---
-			vifDir := t.TempDir()
+			vifDir := compatTempDir(t, "vif-*")
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(vifDir, "composer.json"))
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(vifDir, "composer.lock"))
 
@@ -538,7 +537,7 @@ func TestCompatSummary(t *testing.T) {
 		name := name
 		fixtureDir := filepath.Join(compatFixturesDir, name)
 
-		composerDir := t.TempDir()
+		composerDir := compatTempDir(t, "composer-*")
 		copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(composerDir, "composer.json"))
 		copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(composerDir, "composer.lock"))
 
@@ -549,7 +548,7 @@ func TestCompatSummary(t *testing.T) {
 			continue
 		}
 
-		vifDir := t.TempDir()
+		vifDir := compatTempDir(t, "vif-*")
 		copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(vifDir, "composer.json"))
 		copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(vifDir, "composer.lock"))
 
