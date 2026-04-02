@@ -45,12 +45,13 @@ func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client 
 	prefetched := prefetchMetadata(ctx, client, rootNames, progress)
 
 	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
-	populateVersionCache(versionCache, prefetched, minimumStability)
+	populateVersionCache(versionCache, prefetched, minimumStability, cj.PreferStable)
 
 	r := &resolver{
 		ctx:              ctx,
 		client:           client,
 		minimumStability: minimumStability,
+		preferStable:     cj.PreferStable,
 		versionCache:     versionCache,
 		// progress is nil during solve to avoid double-reporting; all lookups
 		// were already reported during the prefetch pass above.
@@ -188,6 +189,7 @@ type resolver struct {
 	ctx              context.Context
 	client           packagist.Fetcher
 	minimumStability version.Stability
+	preferStable     bool
 	versionCache     map[string]candidateCacheEntry
 	lastConflict     *conflict
 	terminalErr      error
@@ -525,9 +527,7 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 	}
 
 	// Sort descending by version (highest first).
-	sort.Slice(candidates, func(i, j int) bool {
-		return version.Compare(candidates[i].version, candidates[j].version) > 0
-	})
+	sortCandidates(candidates, r.preferStable)
 
 	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
 	return candidates, nil

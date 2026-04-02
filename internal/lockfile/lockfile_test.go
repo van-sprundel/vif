@@ -419,6 +419,119 @@ func TestGenerate(t *testing.T) {
 	if len(pkgEntries) == 2 && pkgEntries[0].Name != "acme/bar" {
 		t.Errorf("packages not sorted: first = %q, want acme/bar", pkgEntries[0].Name)
 	}
+
+	var platform map[string]string
+	json.Unmarshal(lf["platform"], &platform)
+	if platform["php"] != "" {
+		t.Errorf("platform[php] = %q, want empty for non-platform-only input", platform["php"])
+	}
+}
+
+func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "composer.lock")
+
+	existing := `{
+    "_readme": ["test"],
+    "content-hash": "oldhash",
+    "packages": [
+        {
+            "name": "acme/foo",
+            "version": "1.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://example.com/acme/foo.git",
+                "reference": "abc123"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://example.com/acme/foo/1.5.0.zip",
+                "reference": "abc123",
+                "shasum": ""
+            },
+            "notification-url": "https://example.com/downloads/"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "dev",
+    "stability-flags": {},
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {
+        "php": "^8.4"
+    },
+    "platform-dev": {
+        "ext-xdebug": "*"
+    },
+    "plugin-api-version": "2.9.0"
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"php": "^8.4", "acme/foo": "^1.0"},
+		RequireDev:       map[string]string{"ext-xdebug": "*"},
+		MinimumStability: "dev",
+		PreferStable:     true,
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "acme/foo",
+			Version: "1.5.0",
+			Entry: packagist.VersionEntry{
+				Name:    "acme/foo",
+				Version: "1.5.0",
+				Type:    "library",
+				Dist: packagist.DistEntry{
+					URL:       "https://example.com/acme/foo/1.5.0.zip",
+					Type:      "zip",
+					Reference: "abc123",
+				},
+			},
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var out struct {
+		Packages         []map[string]json.RawMessage `json:"packages"`
+		Platform         map[string]string            `json:"platform"`
+		PlatformDev      map[string]string            `json:"platform-dev"`
+		PluginAPIVersion string                       `json:"plugin-api-version"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(out.Packages) != 1 {
+		t.Fatalf("len(packages) = %d, want 1", len(out.Packages))
+	}
+	if _, ok := out.Packages[0]["source"]; !ok {
+		t.Fatalf("expected preserved source field in package entry")
+	}
+	if _, ok := out.Packages[0]["notification-url"]; !ok {
+		t.Fatalf("expected preserved notification-url field in package entry")
+	}
+	if out.Platform["php"] != "^8.4" {
+		t.Fatalf("platform[php] = %q, want ^8.4", out.Platform["php"])
+	}
+	if out.PlatformDev["ext-xdebug"] != "*" {
+		t.Fatalf("platform-dev[ext-xdebug] = %q, want *", out.PlatformDev["ext-xdebug"])
+	}
+	if out.PluginAPIVersion != "2.9.0" {
+		t.Fatalf("plugin-api-version = %q, want 2.9.0", out.PluginAPIVersion)
+	}
 }
 
 func TestGenerateEmpty(t *testing.T) {

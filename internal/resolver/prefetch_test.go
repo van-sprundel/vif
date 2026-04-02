@@ -100,7 +100,7 @@ func TestPrefetchMetadataProgressCallback(t *testing.T) {
 	client.add("acme/bar", "1.0.0", nil)
 
 	var (
-		mu      sync.Mutex
+		mu       sync.Mutex
 		reported []string
 	)
 	progress := func(name string) {
@@ -180,7 +180,7 @@ func TestPopulateVersionCacheOmitsNotFound(t *testing.T) {
 		"acme/found":   {versions: []packagist.VersionEntry{{Name: "acme/found", Version: "1.0.0"}}},
 		"acme/missing": {err: packagist.ErrPackageNotFound},
 	}
-	populateVersionCache(cache, prefetched, 0)
+	populateVersionCache(cache, prefetched, 0, false)
 
 	if _, ok := cache["acme/found"]; !ok {
 		t.Error("acme/found should be in cache")
