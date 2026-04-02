@@ -5,7 +5,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -52,6 +55,7 @@ type compatResult struct {
 	missingFiles      []string
 	extraFiles        []string
 	contentMismatches []string
+	hashMismatches    []string
 	passed            bool
 }
 
@@ -163,9 +167,11 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 
 	// Check composer.json for optimize-autoloader config and root package metadata.
 	optimized := false
+	prependAutoloader := true
 	var root *installer.RootPackage
 	if cj, err := composer.Parse(filepath.Join(dir, "composer.json")); err == nil {
 		optimized = cj.Config.OptimizeAutoloader
+		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
 		root = &installer.RootPackage{
 			Name:    cj.Name,
 			Version: cj.Version,
@@ -198,7 +204,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil, prependAutoloader); err != nil {
 		return "", fmt.Errorf("autoload.Generate: %w", err)
 	}
 
@@ -232,6 +238,20 @@ func walkVendor(t *testing.T, vendorDir string) []string {
 	}
 	sort.Strings(files)
 	return files
+}
+
+// sha256File returns the hex-encoded SHA256 digest of the file at path.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // compareVendorDirs compares the two vendor directories and returns a compatResult.
@@ -282,6 +302,30 @@ func compareVendorDirs(t *testing.T, fixture, composerVendor, vifVendor string) 
 		}
 	}
 
+	// Compare file content hashes for non-autoloader files present in both.
+	var hashMismatches []string
+	for _, f := range vifFiles {
+		if !composerSet[f] {
+			continue
+		}
+		if compatAutoloaderFiles[f] {
+			continue
+		}
+		relToVendor := strings.TrimPrefix(f, "vendor/")
+		composerPath := filepath.Join(composerVendor, relToVendor)
+		vifPath := filepath.Join(vifVendor, relToVendor)
+
+		ch, err1 := sha256File(composerPath)
+		vh, err2 := sha256File(vifPath)
+		if err1 != nil || err2 != nil {
+			hashMismatches = append(hashMismatches, fmt.Sprintf("%s (read error: composer=%v vif=%v)", f, err1, err2))
+			continue
+		}
+		if ch != vh {
+			hashMismatches = append(hashMismatches, f)
+		}
+	}
+
 	passed := len(missingFromVif) == 0 && len(contentMismatches) == 0
 
 	return compatResult{
@@ -291,6 +335,7 @@ func compareVendorDirs(t *testing.T, fixture, composerVendor, vifVendor string) 
 		missingFiles:      missingFromVif,
 		extraFiles:        extraInVif,
 		contentMismatches: contentMismatches,
+		hashMismatches:    hashMismatches,
 		passed:            passed,
 	}
 }
@@ -514,6 +559,10 @@ func TestCompat(t *testing.T) {
 				t.Errorf("autoloader content mismatches (%d):\n%s",
 					len(result.contentMismatches), strings.Join(result.contentMismatches, "\n"))
 			}
+			if len(result.hashMismatches) > 0 {
+				t.Logf("file content hash mismatches (%d):\n  %s",
+					len(result.hashMismatches), strings.Join(result.hashMismatches, "\n  "))
+			}
 		})
 	}
 }
@@ -566,9 +615,9 @@ func TestCompatSummary(t *testing.T) {
 	// Print summary table.
 	t.Log("")
 	t.Log("=== Compatibility Summary ===")
-	t.Logf("%-20s  %8s  %8s  %8s  %8s  %12s  %6s",
-		"Fixture", "Composer", "Vif", "Missing", "Extra", "Mismatches", "Result")
-	t.Log(strings.Repeat("-", 80))
+	t.Logf("%-20s  %8s  %8s  %8s  %8s  %12s  %10s  %6s",
+		"Fixture", "Composer", "Vif", "Missing", "Extra", "Mismatches", "HashDiff", "Result")
+	t.Log(strings.Repeat("-", 92))
 
 	passed := 0
 	for _, r := range results {
@@ -577,18 +626,19 @@ func TestCompatSummary(t *testing.T) {
 			status = "PASS"
 			passed++
 		}
-		t.Logf("%-20s  %8d  %8d  %8d  %8d  %12d  %6s",
+		t.Logf("%-20s  %8d  %8d  %8d  %8d  %12d  %10d  %6s",
 			r.fixture,
 			r.composerTotal,
 			r.vifTotal,
 			len(r.missingFiles),
 			len(r.extraFiles),
 			len(r.contentMismatches),
+			len(r.hashMismatches),
 			status,
 		)
 	}
 
-	t.Log(strings.Repeat("-", 80))
+	t.Log(strings.Repeat("-", 92))
 	pct := 0
 	if len(results) > 0 {
 		pct = passed * 100 / len(results)
@@ -605,6 +655,19 @@ func printCompatResult(t *testing.T, r compatResult) {
 	t.Logf("  Missing from vif      : %d", len(r.missingFiles))
 	t.Logf("  Extra in vif          : %d", len(r.extraFiles))
 	t.Logf("  Autoloader mismatches : %d", len(r.contentMismatches))
+	t.Logf("  Hash mismatches       : %d", len(r.hashMismatches))
+	if len(r.hashMismatches) > 0 {
+		limit := len(r.hashMismatches)
+		if limit > 20 {
+			limit = 20
+		}
+		for _, f := range r.hashMismatches[:limit] {
+			t.Logf("    %s", f)
+		}
+		if len(r.hashMismatches) > 20 {
+			t.Logf("    ... and %d more", len(r.hashMismatches)-20)
+		}
+	}
 	if r.passed {
 		t.Logf("  Result                : PASS")
 	} else {
