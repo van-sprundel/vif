@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/van-sprundel/vif/internal/autoload"
 	"github.com/van-sprundel/vif/internal/cache"
@@ -69,12 +71,16 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	var cached, downloaded, skipped, failed int
+	var skippedPathPackages []string
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
+			if r.Package.Dist.Type == "path" {
+				skippedPathPackages = append(skippedPathPackages, r.Package.Name)
+			}
 			progress.Increment(r.Package.Name)
 		} else if r.FromCache {
 			cached++
@@ -89,8 +95,16 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	if failed > 0 {
 		return fmt.Errorf("%d package(s) failed to download", failed)
 	}
+	if len(skippedPathPackages) > 0 {
+		sort.Strings(skippedPathPackages)
+		return fmt.Errorf(
+			"path repositories are not supported yet; skipped %d path package(s): %s",
+			len(skippedPathPackages),
+			strings.Join(skippedPathPackages, ", "),
+		)
+	}
 
-	fmt.Fprintf(w, "  %d downloaded, %d from cache, %d skipped (path)\n", downloaded, cached, skipped)
+	fmt.Fprintf(w, "  %d downloaded, %d from cache, %d skipped (non-downloadable)\n", downloaded, cached, skipped)
 
 	// Install to vendor/.
 	vendorDir := filepath.Join(".", "vendor")
