@@ -20,6 +20,36 @@ type APIResponse struct {
 	Packages map[string][]VersionEntry `json:"packages"`
 }
 
+// UnmarshalJSON accepts both Packagist's array-shaped p2 responses and
+// GitLab-style object-shaped package maps keyed by version.
+func (r *APIResponse) UnmarshalJSON(data []byte) error {
+	type rawAPIResponse struct {
+		Packages rawPackageMap `json:"packages"`
+	}
+
+	var raw rawAPIResponse
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if len(raw.Packages) == 0 {
+		r.Packages = nil
+		return nil
+	}
+
+	r.Packages = make(map[string][]VersionEntry, len(raw.Packages))
+	for name := range raw.Packages {
+		versions, ok, err := decodeComposerPackages(raw.Packages, name)
+		if err != nil {
+			return err
+		}
+		if ok {
+			r.Packages[name] = versions
+		}
+	}
+	return nil
+}
+
 // VersionEntry is a single version of a package from Packagist.
 type VersionEntry struct {
 	Name              string          `json:"name"`
@@ -135,6 +165,32 @@ type cacheEntry struct {
 	notFound bool
 }
 
+type composerRootResponse struct {
+	Packages rawPackageMap          `json:"packages"`
+	Includes map[string]includeEntry `json:"includes"`
+}
+
+type includeEntry struct {
+	SHA1 string `json:"sha1"`
+}
+
+type rawPackageMap map[string]json.RawMessage
+
+func (m *rawPackageMap) UnmarshalJSON(data []byte) error {
+	switch strings.TrimSpace(string(data)) {
+	case "", "null", "[]":
+		*m = nil
+		return nil
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	*m = obj
+	return nil
+}
+
 // Client fetches package metadata from a Packagist-compatible API.
 type Client struct {
 	baseURL    string
@@ -143,6 +199,10 @@ type Client struct {
 	mu         sync.RWMutex
 	cache      map[string]cacheEntry
 	authErr    bool
+	rootLoaded bool
+	rootErr    error
+	root       rawPackageMap
+	includes   []string
 }
 
 // Fetcher is the metadata interface used by the resolver.
@@ -183,14 +243,6 @@ func (c *Client) SetAuth(cfg *composerauth.Config) {
 // GetPackage fetches all versions of a package from Packagist.
 // Uses ETag-based HTTP caching to avoid redundant downloads.
 func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
-	url := fmt.Sprintf("%s/p2/%s.json", c.baseURL, name)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("packagist: create request for %s: %w", name, err)
-	}
-
-	// Send If-None-Match if we have a cached ETag.
 	c.mu.RLock()
 	cached, hasCached := c.cache[name]
 	authErr := c.authErr
@@ -200,6 +252,35 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	}
 	if hasCached && cached.notFound {
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	if hasCached && cached.etag == "" && len(cached.versions) > 0 {
+		return cached.versions, nil
+	}
+
+	versions, err := c.getPackageP2(ctx, name, cached, hasCached)
+	if err == nil {
+		return versions, nil
+	}
+	if !errors.Is(err, ErrPackageNotFound) {
+		return nil, err
+	}
+
+	versions, err = c.getPackageFromRootIncludes(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.cache[name] = cacheEntry{versions: versions}
+	c.mu.Unlock()
+	return versions, nil
+}
+
+func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntry, hasCached bool) ([]VersionEntry, error) {
+	url := fmt.Sprintf("%s/p2/%s.json", c.baseURL, name)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("packagist: create request for %s: %w", name, err)
 	}
 	if hasCached && cached.etag != "" {
 		req.Header.Set("If-None-Match", cached.etag)
@@ -212,15 +293,10 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	}
 	defer resp.Body.Close()
 
-	// 304 Not Modified — return cached data.
 	if resp.StatusCode == http.StatusNotModified && hasCached {
 		return cached.versions, nil
 	}
-
 	if resp.StatusCode == http.StatusNotFound {
-		c.mu.Lock()
-		c.cache[name] = cacheEntry{notFound: true}
-		c.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -229,7 +305,6 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		c.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrAuthRequired, name)
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("packagist: fetch %s: HTTP %d", name, resp.StatusCode)
 	}
@@ -249,11 +324,168 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 
-	// Cache the result with ETag.
 	etag := resp.Header.Get("ETag")
 	c.mu.Lock()
 	c.cache[name] = cacheEntry{etag: etag, versions: versions}
 	c.mu.Unlock()
 
 	return versions, nil
+}
+
+func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([]VersionEntry, error) {
+	rootPackages, includeURLs, err := c.loadRootMetadata(ctx)
+	if err != nil {
+		if errors.Is(err, ErrPackageNotFound) {
+			c.mu.Lock()
+			c.cache[name] = cacheEntry{notFound: true}
+			c.mu.Unlock()
+		}
+		return nil, err
+	}
+
+	if versions, ok, err := decodeComposerPackages(rootPackages, name); err != nil {
+		return nil, err
+	} else if ok {
+		return versions, nil
+	}
+
+	for _, includeURL := range includeURLs {
+		data, err := c.fetchJSON(ctx, includeURL)
+		if err != nil {
+			return nil, fmt.Errorf("packagist: fetch include for %s: %w", name, err)
+		}
+		var includeResp composerRootResponse
+		if err := json.Unmarshal(data, &includeResp); err != nil {
+			return nil, fmt.Errorf("packagist: unmarshal include for %s: %w", name, err)
+		}
+		if versions, ok, err := decodeComposerPackages(includeResp.Packages, name); err != nil {
+			return nil, err
+		} else if ok {
+			return versions, nil
+		}
+	}
+
+	c.mu.Lock()
+	c.cache[name] = cacheEntry{notFound: true}
+	c.mu.Unlock()
+	return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+}
+
+func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string, error) {
+	c.mu.RLock()
+	if c.rootLoaded {
+		packages := cloneRawMessageMap(c.root)
+		includeURLs := append([]string(nil), c.includes...)
+		rootErr := c.rootErr
+		c.mu.RUnlock()
+		return packages, includeURLs, rootErr
+	}
+	c.mu.RUnlock()
+
+	data, err := c.fetchJSON(ctx, c.baseURL+"/packages.json")
+	if err != nil {
+		c.mu.Lock()
+		c.rootLoaded = true
+		c.rootErr = err
+		c.mu.Unlock()
+		return nil, nil, err
+	}
+
+	var root composerRootResponse
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, nil, fmt.Errorf("packagist: unmarshal packages.json: %w", err)
+	}
+
+	includeURLs := make([]string, 0, len(root.Includes))
+	for path := range root.Includes {
+		includeURLs = append(includeURLs, strings.TrimRight(c.baseURL, "/")+"/"+strings.TrimLeft(path, "/"))
+	}
+
+	c.mu.Lock()
+	c.rootLoaded = true
+	c.rootErr = nil
+	c.root = cloneRawMessageMap(root.Packages)
+	c.includes = includeURLs
+	c.mu.Unlock()
+	return root.Packages, append([]string(nil), includeURLs...), nil
+}
+
+func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("packagist: create request %s: %w", url, err)
+	}
+	c.auth.ApplyRequest(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("packagist: fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		c.mu.Lock()
+		c.authErr = true
+		c.mu.Unlock()
+		return nil, ErrAuthRequired
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrPackageNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("packagist: fetch %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("packagist: read response %s: %w", url, err)
+	}
+	return body, nil
+}
+
+func decodeComposerPackages(packages rawPackageMap, name string) ([]VersionEntry, bool, error) {
+	if len(packages) == 0 {
+		return nil, false, nil
+	}
+	raw, ok := packages[name]
+	if !ok {
+		return nil, false, nil
+	}
+
+	var list []VersionEntry
+	if err := json.Unmarshal(raw, &list); err == nil {
+		normalizeVersionEntries(name, list)
+		return list, true, nil
+	}
+
+	var byVersion map[string]VersionEntry
+	if err := json.Unmarshal(raw, &byVersion); err != nil {
+		return nil, false, fmt.Errorf("packagist: unmarshal %s: %w", name, err)
+	}
+
+	versions := make([]VersionEntry, 0, len(byVersion))
+	for _, version := range byVersion {
+		versions = append(versions, version)
+	}
+	normalizeVersionEntries(name, versions)
+	return versions, true, nil
+}
+
+func normalizeVersionEntries(name string, versions []VersionEntry) {
+	for i := range versions {
+		if versions[i].Name == "" {
+			versions[i].Name = name
+		}
+	}
+}
+
+func cloneRawMessageMap(src rawPackageMap) rawPackageMap {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(rawPackageMap, len(src))
+	for key, value := range src {
+		dst[key] = append(json.RawMessage(nil), value...)
+	}
+	return dst
 }

@@ -27,6 +27,26 @@ func TestApplyRequestUsesGitLabTokenForArchives(t *testing.T) {
 	}
 }
 
+func TestApplyRequestUsesGitLabTokenForComposerMetadata(t *testing.T) {
+	cfg := &Config{
+		GitLabToken: map[string]string{"gitlab.com": "token-123"},
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://gitlab.com/api/v4/group/1/-/packages/composer/p2/acme/pkg.json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	cfg.ApplyRequest(req)
+
+	if got := req.Header.Get("Private-Token"); got != "token-123" {
+		t.Fatalf("Private-Token = %q, want token-123", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want empty", got)
+	}
+}
+
 func TestApplyRequestUsesBearerFallback(t *testing.T) {
 	cfg := &Config{
 		Bearer: map[string]string{"repo.example.com": "bearer-123"},
