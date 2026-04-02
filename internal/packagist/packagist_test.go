@@ -290,3 +290,44 @@ func TestRelationMapUnmarshalMixedShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestStringListUnmarshalMixedShapes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  packagist.StringList
+	}{
+		{
+			name:  "single string",
+			input: `"bin/console"`,
+			want:  packagist.StringList{"bin/console"},
+		},
+		{
+			name:  "array",
+			input: `["bin/console","bin/tool"]`,
+			want:  packagist.StringList{"bin/console", "bin/tool"},
+		},
+		{
+			name:  "null",
+			input: `null`,
+			want:  nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got packagist.StringList
+			if err := json.Unmarshal([]byte(tc.input), &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(got) = %d, want %d", len(got), len(tc.want))
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
