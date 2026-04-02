@@ -3,6 +3,7 @@ package packagist
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,6 +144,9 @@ type Client struct {
 
 const defaultHTTPTimeout = 10 * time.Second
 
+// ErrPackageNotFound marks a package as absent from the Packagist registry.
+var ErrPackageNotFound = errors.New("packagist: package not found")
+
 // NewClient creates a Packagist client. baseURL is typically "https://repo.packagist.org".
 func NewClient(baseURL string) *Client {
 	return NewClientWithHTTPClient(baseURL, &http.Client{Timeout: defaultHTTPTimeout})
@@ -175,7 +179,7 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	cached, hasCached := c.cache[name]
 	c.mu.RUnlock()
 	if hasCached && cached.notFound {
-		return nil, fmt.Errorf("packagist: package %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 	if hasCached && cached.etag != "" {
 		req.Header.Set("If-None-Match", cached.etag)
@@ -196,7 +200,7 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		c.mu.Lock()
 		c.cache[name] = cacheEntry{notFound: true}
 		c.mu.Unlock()
-		return nil, fmt.Errorf("packagist: package %s not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -215,7 +219,7 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 
 	versions, ok := apiResp.Packages[name]
 	if !ok {
-		return nil, fmt.Errorf("packagist: package %s not found in response", name)
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 
 	// Cache the result with ETag.

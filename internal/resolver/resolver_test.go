@@ -322,6 +322,9 @@ func TestResolvePackageNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent package")
 	}
+	if !strings.Contains(err.Error(), "nonexistent/pkg") {
+		t.Fatalf("expected missing package in error, got %v", err)
+	}
 }
 
 func TestResolveCancellationDuringBacktracking(t *testing.T) {
@@ -438,6 +441,79 @@ func TestResolveMergesDuplicatePendingRequirements(t *testing.T) {
 	}
 	if phpParserLookups != 1 {
 		t.Fatalf("nikic/php-parser looked up %d times, want 1; seen=%v", phpParserLookups, seen)
+	}
+}
+
+func TestResolveCachesMissingPackageFailures(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{
+		"missing/private-package": "^1.0",
+		"acme/provider":           "^1.0",
+	})
+	reg.add("acme/provider", "1.0.0", map[string]string{
+		"missing/private-package": "^1.0",
+	})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	var seen []string
+	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seen = append(seen, name)
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var missingLookups int
+	for _, name := range seen {
+		if name == "missing/private-package" {
+			missingLookups++
+		}
+	}
+	if missingLookups != 1 {
+		t.Fatalf("missing/private-package looked up %d times, want 1; seen=%v", missingLookups, seen)
+	}
+}
+
+func TestResolveDoesNotDeferPackagistNotFound(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{
+		"missing/private-package": "^1.0",
+		"acme/other":              "^1.0",
+	})
+	reg.add("acme/other", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	var seen []string
+	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seen = append(seen, name)
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "private/custom repositories are not supported yet") {
+		t.Fatalf("expected unsupported private repository error, got %v", err)
+	}
+
+	for _, name := range seen {
+		if name == "acme/other" {
+			t.Fatalf("expected fail-fast on missing package before exploring acme/other; seen=%v", seen)
+		}
 	}
 }
 
