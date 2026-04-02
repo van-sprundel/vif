@@ -200,9 +200,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	r.depth++
 	defer func() { r.depth-- }()
 
-	req := reqs[0]
-	rest := reqs[1:]
-	req, rest, pendingConstraints := mergePendingRequirements(req, rest)
+	req, rest, pendingConstraints := r.selectRequirement(s, reqs)
 
 	// Skip platform packages that slipped through.
 	if pkg.IsPlatformPackage(req.name) {
@@ -326,6 +324,115 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	r.recordConflict(req.name, req.constraint, reason)
 
 	return false
+}
+
+func (r *resolver) selectRequirement(s *state, reqs []requirement) (requirement, []requirement, []version.Constraint) {
+	type aggregate struct {
+		req         requirement
+		constraints []version.Constraint
+		firstIndex  int
+	}
+
+	aggregates := make(map[string]*aggregate, len(reqs))
+	order := make([]string, 0, len(reqs))
+	for i, req := range reqs {
+		agg, ok := aggregates[req.name]
+		if !ok {
+			aggregates[req.name] = &aggregate{
+				req:         req,
+				constraints: []version.Constraint{req.constraint},
+				firstIndex:  i,
+			}
+			order = append(order, req.name)
+			continue
+		}
+		agg.constraints = appendConstraintsUnique(agg.constraints, []version.Constraint{req.constraint})
+		agg.req.dev = agg.req.dev && req.dev
+		agg.req.root = agg.req.root || req.root
+		agg.req.deferred = agg.req.deferred || req.deferred
+	}
+
+	bestName := order[0]
+	bestScore := int(^uint(0) >> 1)
+	bestIndex := len(reqs)
+
+	for _, name := range order {
+		agg := aggregates[name]
+		score := r.requirementScore(s, agg.req, agg.constraints)
+		if score < bestScore || (score == bestScore && agg.firstIndex < bestIndex) {
+			bestName = name
+			bestScore = score
+			bestIndex = agg.firstIndex
+		}
+	}
+
+	selected := aggregates[bestName]
+	rest := make([]requirement, 0, len(reqs)-1)
+	for _, req := range reqs {
+		if req.name == bestName {
+			continue
+		}
+		rest = append(rest, req)
+	}
+
+	return selected.req, rest, selected.constraints
+}
+
+func (r *resolver) requirementScore(s *state, req requirement, pending []version.Constraint) int {
+	if pkg.IsPlatformPackage(req.name) {
+		return -1
+	}
+	if existing, ok := s.resolved[req.name]; ok {
+		v, err := version.Parse(existing.entry.Version)
+		if err != nil {
+			return 0
+		}
+		if matchesAll(v, pending) {
+			return -1
+		}
+		return 0
+	}
+	if prov, ok := s.providers[req.name]; ok {
+		if existing, hasReal := s.resolved[prov.realName]; hasReal {
+			provVersion := existing.entry.Provide[req.name]
+			if provVersion == "" {
+				provVersion = existing.entry.Replace[req.name]
+			}
+			if provVersion == "" || provVersion == "*" {
+				return -1
+			}
+			v, err := version.Parse(provVersion)
+			if err == nil && matchesAll(v, pending) {
+				return -1
+			}
+			return 0
+		}
+	}
+
+	score := 1000
+	if req.root {
+		score -= 100
+	}
+	score -= len(pending) * 10
+	score -= len(s.constraints[req.name]) * 10
+
+	if cached, ok := r.versionCache[req.name]; ok {
+		if cached.err != nil {
+			return 0
+		}
+		constraints := append([]version.Constraint{}, pending...)
+		constraints = appendConstraintsUnique(constraints, s.constraints[req.name])
+
+		matching := 0
+		for _, c := range cached.candidates {
+			if matchesAll(c.version, constraints) {
+				matching++
+			}
+		}
+		return matching
+	}
+
+	return score
 }
 
 func (r *resolver) buildError(s *state) error {

@@ -142,6 +142,7 @@ type Client struct {
 	auth       *composerauth.Config
 	mu         sync.RWMutex
 	cache      map[string]cacheEntry
+	authErr    bool
 }
 
 // Fetcher is the metadata interface used by the resolver.
@@ -192,7 +193,11 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	// Send If-None-Match if we have a cached ETag.
 	c.mu.RLock()
 	cached, hasCached := c.cache[name]
+	authErr := c.authErr
 	c.mu.RUnlock()
+	if authErr {
+		return nil, fmt.Errorf("%w: %s", ErrAuthRequired, name)
+	}
 	if hasCached && cached.notFound {
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
@@ -219,6 +224,9 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		c.mu.Lock()
+		c.authErr = true
+		c.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrAuthRequired, name)
 	}
 

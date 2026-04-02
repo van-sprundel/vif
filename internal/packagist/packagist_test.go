@@ -221,6 +221,32 @@ func TestClientCachesNotFound(t *testing.T) {
 	}
 }
 
+func TestClientCachesAuthRequired(t *testing.T) {
+	var requestCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		http.Error(w, "auth required", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+
+	for _, name := range []string{"acme/foo", "acme/bar"} {
+		_, err := client.GetPackage(context.Background(), name)
+		if err == nil {
+			t.Fatal("expected auth-required error")
+		}
+		if !strings.Contains(err.Error(), "authentication required") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
+}
+
 func TestClientAppliesComposerAuth(t *testing.T) {
 	resp := sampleResponse()
 	data, _ := json.Marshal(resp)

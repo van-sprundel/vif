@@ -10,6 +10,7 @@ type Constraint struct {
 	// OR groups — a version must match at least one group.
 	// Each group is an AND of bounds.
 	groups []constraintGroup
+	text   string
 }
 
 type constraintGroup struct {
@@ -61,7 +62,7 @@ func ParseConstraint(s string) (Constraint, error) {
 		return Constraint{}, fmt.Errorf("constraint: no valid groups in %q", s)
 	}
 
-	return Constraint{groups: groups}, nil
+	return Constraint{groups: groups, text: renderConstraint(groups)}, nil
 }
 
 // parseGroup parses a single AND group (space or comma-separated bounds).
@@ -315,8 +316,15 @@ func (b bound) matches(v Version) bool {
 
 // String returns a normalized string representation of the constraint.
 func (c Constraint) String() string {
-	parts := make([]string, len(c.groups))
-	for i, g := range c.groups {
+	if c.text != "" {
+		return c.text
+	}
+	return renderConstraint(c.groups)
+}
+
+func renderConstraint(groups []constraintGroup) string {
+	parts := make([]string, len(groups))
+	for i, g := range groups {
 		parts[i] = g.String()
 	}
 	return strings.Join(parts, " || ")
