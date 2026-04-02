@@ -195,6 +195,120 @@ func TestHasExtracted(t *testing.T) {
 	}
 }
 
+func TestInsertAndLookupMetadata(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	repoURL := "https://repo.packagist.org"
+	pkg := "acme/foo"
+	body := []byte(`{"packages":{"acme/foo":[{"name":"acme/foo","version":"1.0.0"}]}}`)
+	etag := `"etag-abc"`
+
+	// Lookup before insert should return false.
+	_, _, ok, err := c.LookupMetadata(repoURL, pkg)
+	if err != nil {
+		t.Fatalf("LookupMetadata: %v", err)
+	}
+	if ok {
+		t.Fatal("LookupMetadata returned true before insert")
+	}
+
+	// Insert.
+	if err := c.InsertMetadata(repoURL, pkg, etag, body); err != nil {
+		t.Fatalf("InsertMetadata: %v", err)
+	}
+
+	// Lookup after insert should return the entry.
+	gotETag, gotBody, ok, err := c.LookupMetadata(repoURL, pkg)
+	if err != nil {
+		t.Fatalf("LookupMetadata: %v", err)
+	}
+	if !ok {
+		t.Fatal("LookupMetadata returned false after insert")
+	}
+	if gotETag != etag {
+		t.Errorf("etag = %q, want %q", gotETag, etag)
+	}
+	if string(gotBody) != string(body) {
+		t.Errorf("body = %q, want %q", gotBody, body)
+	}
+}
+
+func TestInsertMetadataUpsert(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	repoURL := "https://repo.packagist.org"
+	pkg := "acme/foo"
+	body1 := []byte(`{"packages":{"acme/foo":[{"version":"1.0.0"}]}}`)
+	body2 := []byte(`{"packages":{"acme/foo":[{"version":"2.0.0"}]}}`)
+
+	if err := c.InsertMetadata(repoURL, pkg, `"etag-v1"`, body1); err != nil {
+		t.Fatalf("InsertMetadata 1: %v", err)
+	}
+	if err := c.InsertMetadata(repoURL, pkg, `"etag-v2"`, body2); err != nil {
+		t.Fatalf("InsertMetadata 2: %v", err)
+	}
+
+	gotETag, gotBody, ok, err := c.LookupMetadata(repoURL, pkg)
+	if err != nil {
+		t.Fatalf("LookupMetadata: %v", err)
+	}
+	if !ok {
+		t.Fatal("LookupMetadata returned false")
+	}
+	if gotETag != `"etag-v2"` {
+		t.Errorf("after upsert, etag = %q, want %q", gotETag, `"etag-v2"`)
+	}
+	if string(gotBody) != string(body2) {
+		t.Errorf("after upsert, body = %q, want %q", gotBody, body2)
+	}
+}
+
+func TestMetadataDifferentRepos(t *testing.T) {
+	dir := t.TempDir()
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	pkg := "acme/foo"
+	body1 := []byte(`{"packages":{"acme/foo":[{"version":"1.0.0"}]}}`)
+	body2 := []byte(`{"packages":{"acme/foo":[{"version":"2.0.0"}]}}`)
+
+	if err := c.InsertMetadata("https://repo.packagist.org", pkg, `"etag-public"`, body1); err != nil {
+		t.Fatalf("InsertMetadata public: %v", err)
+	}
+	if err := c.InsertMetadata("https://private.example.com", pkg, `"etag-private"`, body2); err != nil {
+		t.Fatalf("InsertMetadata private: %v", err)
+	}
+
+	_, gotBody1, ok1, err := c.LookupMetadata("https://repo.packagist.org", pkg)
+	if err != nil || !ok1 {
+		t.Fatalf("LookupMetadata public: ok=%v err=%v", ok1, err)
+	}
+	_, gotBody2, ok2, err := c.LookupMetadata("https://private.example.com", pkg)
+	if err != nil || !ok2 {
+		t.Fatalf("LookupMetadata private: ok=%v err=%v", ok2, err)
+	}
+
+	if string(gotBody1) != string(body1) {
+		t.Errorf("public body mismatch: %q", gotBody1)
+	}
+	if string(gotBody2) != string(body2) {
+		t.Errorf("private body mismatch: %q", gotBody2)
+	}
+}
+
 func BenchmarkInsert(b *testing.B) {
 	dir := b.TempDir()
 	c, err := cache.New(dir)

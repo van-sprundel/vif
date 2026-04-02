@@ -65,6 +65,10 @@ func New(dir string) (*Cache, error) {
 		db.Close()
 		return nil, fmt.Errorf("cache: create table: %w", err)
 	}
+	if _, err := db.Exec(createMetadataTable); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cache: create metadata table: %w", err)
+	}
 
 	return &Cache{db: db, dir: dir}, nil
 }
@@ -111,6 +115,42 @@ func (c *Cache) Lookup(name, version string) (Entry, bool, error) {
 		return Entry{}, false, fmt.Errorf("cache: lookup %s@%s: %w", name, version, err)
 	}
 	return e, true, nil
+}
+
+// LookupMetadata returns the cached P2 metadata for a package from a specific repo.
+// Returns (etag, body, true, nil) if found, or ("", nil, false, nil) if not present.
+func (c *Cache) LookupMetadata(repoURL, packageName string) (etag string, body []byte, ok bool, err error) {
+	const query = `
+		SELECT etag, body
+		FROM metadata
+		WHERE repo_url = ? AND package = ?
+	`
+	var e, b []byte
+	scanErr := c.db.QueryRow(query, repoURL, packageName).Scan(&e, &b)
+	if scanErr == sql.ErrNoRows {
+		return "", nil, false, nil
+	}
+	if scanErr != nil {
+		return "", nil, false, fmt.Errorf("cache: lookup metadata %s %s: %w", repoURL, packageName, scanErr)
+	}
+	return string(e), b, true, nil
+}
+
+// InsertMetadata stores or updates the cached P2 metadata for a package.
+func (c *Cache) InsertMetadata(repoURL, packageName, etag string, body []byte) error {
+	const query = `
+		INSERT INTO metadata (repo_url, package, etag, body, fetched_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (repo_url, package) DO UPDATE SET
+			etag       = excluded.etag,
+			body       = excluded.body,
+			fetched_at = excluded.fetched_at
+	`
+	_, err := c.db.Exec(query, repoURL, packageName, etag, body, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("cache: insert metadata %s %s: %w", repoURL, packageName, err)
+	}
+	return nil
 }
 
 // PackageDir returns the cache directory for a given cache key: <dir>/files/<cacheKey>.

@@ -13,3 +13,14 @@ CREATE TABLE IF NOT EXISTS packages (
     PRIMARY KEY (name, version)
 );
 `
+
+const createMetadataTable = `
+CREATE TABLE IF NOT EXISTS metadata (
+    repo_url    TEXT NOT NULL,
+    package     TEXT NOT NULL,
+    etag        TEXT NOT NULL DEFAULT '',
+    body        BLOB NOT NULL,
+    fetched_at  INTEGER NOT NULL,
+    PRIMARY KEY (repo_url, package)
+);
+`
