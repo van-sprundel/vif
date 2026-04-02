@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -131,10 +132,42 @@ func (d *Downloader) fetch(ctx context.Context, url string) ([]byte, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
+		return nil, classifyFetchStatus(url, resp.StatusCode)
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+func classifyFetchStatus(rawURL string, statusCode int) error {
+	if statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
+		return fmt.Errorf("fetch %s: HTTP %d", rawURL, statusCode)
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("fetch %s: HTTP %d", rawURL, statusCode)
+	}
+
+	if isPrivateArchiveHost(u) {
+		return fmt.Errorf("fetch %s: HTTP %d; authenticated package archives are not supported yet", rawURL, statusCode)
+	}
+
+	return fmt.Errorf("fetch %s: HTTP %d", rawURL, statusCode)
+}
+
+func isPrivateArchiveHost(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+
+	switch strings.ToLower(u.Host) {
+	case "gitlab.com", "www.gitlab.com":
+		return strings.Contains(u.Path, "/api/v4/projects/") && strings.Contains(u.Path, "/packages/composer/archives/")
+	case "api.github.com":
+		return strings.Contains(u.Path, "/repos/") && strings.Contains(u.Path, "/zipball/")
+	default:
+		return false
+	}
 }
 
 func extractZip(data []byte, dest string) error {
