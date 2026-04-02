@@ -153,6 +153,8 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 		logAutoloadScanStats(scanStats)
 	}
 
+	classmap["Composer\\InstalledVersions"] = "composer/InstalledVersions.php"
+
 	// Sort files for deterministic output.
 	sort.Slice(files, func(i, j int) bool { return files[i].key < files[j].key })
 

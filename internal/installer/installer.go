@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/van-sprundel/vif/internal/cache"
@@ -18,6 +19,13 @@ type Installer struct {
 	cache *cache.Cache
 }
 
+// RootPackage describes the root project metadata Composer exposes at runtime.
+type RootPackage struct {
+	Name    string
+	Version string
+	Type    string
+}
+
 // New creates an Installer backed by the given cache.
 func New(c *cache.Cache) *Installer {
 	return &Installer{cache: c}
@@ -26,7 +34,7 @@ func New(c *cache.Cache) *Installer {
 // Install links all packages from cache into vendorDir, removes stale packages,
 // and writes vendor/composer/installed.json.
 // packages are the production dependencies, devPackages are the dev dependencies.
-func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir string) error {
+func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir string, root *RootPackage) error {
 	all := append(packages, devPackages...)
 
 	// Build set of expected package names for stale detection.
@@ -62,8 +70,8 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 	}
 
 	// Write installed.json.
-	if err := writeInstalledJSON(vendorDir, packages, devPackages); err != nil {
-		return fmt.Errorf("write installed.json: %w", err)
+	if err := writeInstalledMetadata(vendorDir, packages, devPackages, root); err != nil {
+		return fmt.Errorf("write installed metadata: %w", err)
 	}
 
 	return nil
@@ -228,7 +236,7 @@ type installedPackage struct {
 	InstallPath string       `json:"install-path"`
 }
 
-func writeInstalledJSON(vendorDir string, packages, devPackages []pkg.Package) error {
+func writeInstalledMetadata(vendorDir string, packages, devPackages []pkg.Package, root *RootPackage) error {
 	composerDir := filepath.Join(vendorDir, "composer")
 	if err := os.MkdirAll(composerDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir composer: %w", err)
@@ -265,5 +273,269 @@ func writeInstalledJSON(vendorDir string, packages, devPackages []pkg.Package) e
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	return os.WriteFile(filepath.Join(composerDir, "installed.json"), data, 0o644)
+	if err := os.WriteFile(filepath.Join(composerDir, "installed.json"), data, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(composerDir, "installed.php"), []byte(generateInstalledPHP(packages, devPackages, root)), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(composerDir, "InstalledVersions.php"), []byte(installedVersionsPHP), 0o644); err != nil {
+		return err
+	}
+
+	return nil
 }
+
+func generateInstalledPHP(packages, devPackages []pkg.Package, root *RootPackage) string {
+	rootMeta := normalizeRootPackage(root)
+
+	type versionEntry struct {
+		name    string
+		version string
+		typ     string
+		path    string
+		dev     bool
+	}
+
+	allEntries := make([]versionEntry, 0, len(packages)+len(devPackages)+1)
+	allEntries = append(allEntries, versionEntry{
+		name:    rootMeta.Name,
+		version: rootMeta.Version,
+		typ:     rootMeta.Type,
+		path:    "__DIR__ . '/../../'",
+		dev:     false,
+	})
+	for _, p := range packages {
+		allEntries = append(allEntries, versionEntry{
+			name:    p.Name,
+			version: p.Version,
+			typ:     p.Type,
+			path:    installPathExpr(p.Name),
+			dev:     false,
+		})
+	}
+	for _, p := range devPackages {
+		allEntries = append(allEntries, versionEntry{
+			name:    p.Name,
+			version: p.Version,
+			typ:     p.Type,
+			path:    installPathExpr(p.Name),
+			dev:     true,
+		})
+	}
+
+	sort.Slice(allEntries, func(i, j int) bool { return allEntries[i].name < allEntries[j].name })
+
+	var b strings.Builder
+	b.WriteString("<?php return array(\n")
+	b.WriteString("    'root' => array(\n")
+	fmt.Fprintf(&b, "        'name' => %s,\n", phpString(rootMeta.Name))
+	fmt.Fprintf(&b, "        'pretty_version' => %s,\n", phpString(prettyVersion(rootMeta.Version)))
+	fmt.Fprintf(&b, "        'version' => %s,\n", phpString(normalizedVersion(rootMeta.Version)))
+	b.WriteString("        'reference' => null,\n")
+	fmt.Fprintf(&b, "        'type' => %s,\n", phpString(rootMeta.Type))
+	b.WriteString("        'install_path' => __DIR__ . '/../../',\n")
+	b.WriteString("        'aliases' => array(),\n")
+	fmt.Fprintf(&b, "        'dev' => %s,\n", phpBool(len(devPackages) > 0 || len(packages) == 0))
+	b.WriteString("    ),\n")
+	b.WriteString("    'versions' => array(\n")
+	for _, entry := range allEntries {
+		fmt.Fprintf(&b, "        %s => array(\n", phpString(entry.name))
+		fmt.Fprintf(&b, "            'pretty_version' => %s,\n", phpString(prettyVersion(entry.version)))
+		fmt.Fprintf(&b, "            'version' => %s,\n", phpString(normalizedVersion(entry.version)))
+		b.WriteString("            'reference' => null,\n")
+		fmt.Fprintf(&b, "            'type' => %s,\n", phpString(packageType(entry.typ)))
+		fmt.Fprintf(&b, "            'install_path' => %s,\n", entry.path)
+		b.WriteString("            'aliases' => array(),\n")
+		fmt.Fprintf(&b, "            'dev_requirement' => %s,\n", phpBool(entry.dev))
+		b.WriteString("        ),\n")
+	}
+	b.WriteString("    ),\n")
+	b.WriteString(");\n")
+	return b.String()
+}
+
+func normalizeRootPackage(root *RootPackage) RootPackage {
+	if root == nil {
+		return RootPackage{
+			Name:    "__root__",
+			Version: "",
+			Type:    "library",
+		}
+	}
+
+	return RootPackage{
+		Name:    firstNonEmpty(root.Name, "__root__"),
+		Version: root.Version,
+		Type:    packageType(root.Type),
+	}
+}
+
+func installPathExpr(name string) string {
+	return "__DIR__ . " + phpString("/../"+name)
+}
+
+func packageType(typ string) string {
+	if strings.TrimSpace(typ) == "" {
+		return "library"
+	}
+	return typ
+}
+
+func prettyVersion(version string) string {
+	if strings.TrimSpace(version) == "" {
+		return "1.0.0+no-version-set"
+	}
+	return version
+}
+
+func normalizedVersion(version string) string {
+	if strings.TrimSpace(version) == "" {
+		return "1.0.0.0"
+	}
+	return version
+}
+
+func phpString(s string) string {
+	escaped := strings.ReplaceAll(s, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+	return "'" + escaped + "'"
+}
+
+func phpBool(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+const installedVersionsPHP = `<?php
+
+namespace Composer;
+
+use Composer\Semver\VersionParser;
+
+final class InstalledVersions
+{
+    private static $installed;
+
+    public static function getInstalledPackages()
+    {
+        return array_keys(self::getInstalled()['versions']);
+    }
+
+    public static function getInstalledPackagesByType($type)
+    {
+        $packages = array();
+        foreach (self::getInstalled()['versions'] as $name => $package) {
+            if (($package['type'] ?? null) === $type) {
+                $packages[] = $name;
+            }
+        }
+
+        return $packages;
+    }
+
+    public static function isInstalled($packageName, $includeDevRequirements = true)
+    {
+        if (!isset(self::getInstalled()['versions'][$packageName])) {
+            return false;
+        }
+
+        if ($includeDevRequirements) {
+            return true;
+        }
+
+        return !((self::getInstalled()['versions'][$packageName]['dev_requirement'] ?? false) === true);
+    }
+
+    public static function satisfies(VersionParser $parser, $packageName, $constraint)
+    {
+        $constraint = $parser->parseConstraints((string) $constraint);
+        $provided = $parser->parseConstraints(self::getVersionRanges($packageName));
+
+        return $provided->matches($constraint);
+    }
+
+    public static function getVersionRanges($packageName)
+    {
+        $package = self::getVersionEntry($packageName);
+        $ranges = array();
+
+        if (isset($package['pretty_version'])) {
+            $ranges[] = $package['pretty_version'];
+        }
+        if (array_key_exists('aliases', $package)) {
+            $ranges = array_merge($ranges, $package['aliases']);
+        }
+        if (array_key_exists('replaced', $package)) {
+            $ranges = array_merge($ranges, $package['replaced']);
+        }
+        if (array_key_exists('provided', $package)) {
+            $ranges = array_merge($ranges, $package['provided']);
+        }
+
+        return implode(' || ', $ranges);
+    }
+
+    public static function getVersion($packageName)
+    {
+        return self::getVersionEntry($packageName)['version'] ?? null;
+    }
+
+    public static function getPrettyVersion($packageName)
+    {
+        return self::getVersionEntry($packageName)['pretty_version'] ?? null;
+    }
+
+    public static function getReference($packageName)
+    {
+        return self::getVersionEntry($packageName)['reference'] ?? null;
+    }
+
+    public static function getInstallPath($packageName)
+    {
+        return self::getVersionEntry($packageName)['install_path'] ?? null;
+    }
+
+    public static function getRootPackage()
+    {
+        return self::getInstalled()['root'];
+    }
+
+    public static function getRawData()
+    {
+        return self::getInstalled();
+    }
+
+    public static function reload($data)
+    {
+        self::$installed = $data;
+    }
+
+    private static function getInstalled()
+    {
+        if (null === self::$installed) {
+            self::$installed = require __DIR__ . '/installed.php';
+        }
+
+        return self::$installed;
+    }
+
+    private static function getVersionEntry($packageName)
+    {
+        if (!isset(self::getInstalled()['versions'][$packageName])) {
+            throw new \OutOfBoundsException('Package "' . $packageName . '" is not installed');
+        }
+
+        return self::getInstalled()['versions'][$packageName];
+    }
+}
+`

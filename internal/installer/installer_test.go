@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -78,7 +79,7 @@ func TestInstallCreatesVendorLayout(t *testing.T) {
 	vendorDir := filepath.Join(t.TempDir(), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir); err != nil {
+	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -104,7 +105,7 @@ func TestInstallUsesHardlinks(t *testing.T) {
 	vendorDir := filepath.Join(t.TempDir(), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir); err != nil {
+	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -138,12 +139,12 @@ func TestInstallRemovesStalePackages(t *testing.T) {
 
 	// First install with both packages.
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir); err != nil {
+	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install 1: %v", err)
 	}
 
 	// Second install with only the first package — bar should be removed.
-	if err := inst.Install(packages[:1], nil, vendorDir); err != nil {
+	if err := inst.Install(packages[:1], nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install 2: %v", err)
 	}
 
@@ -176,7 +177,7 @@ func TestInstallWritesInstalledJSON(t *testing.T) {
 	vendorDir := filepath.Join(t.TempDir(), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, devPackages, vendorDir); err != nil {
+	if err := inst.Install(packages, devPackages, vendorDir, &installer.RootPackage{Name: "acme/demo"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -220,6 +221,28 @@ func TestInstallWritesInstalledJSON(t *testing.T) {
 			t.Errorf("package[%d] missing install-path", i)
 		}
 	}
+
+	installedPHP, err := os.ReadFile(filepath.Join(vendorDir, "composer", "installed.php"))
+	if err != nil {
+		t.Fatalf("read installed.php: %v", err)
+	}
+	content := string(installedPHP)
+	if !strings.Contains(content, "'root' => array(") {
+		t.Fatalf("installed.php missing root metadata:\n%s", content)
+	}
+	if !strings.Contains(content, "'acme/demo' => array(") {
+		t.Fatalf("installed.php missing root version entry:\n%s", content)
+	}
+	if !strings.Contains(content, "'vendor/dev-tool' => array(") {
+		t.Fatalf("installed.php missing dev package entry:\n%s", content)
+	}
+	if !strings.Contains(content, "'dev_requirement' => true") {
+		t.Fatalf("installed.php missing dev requirement flag:\n%s", content)
+	}
+
+	if _, err := os.Stat(filepath.Join(vendorDir, "composer", "InstalledVersions.php")); err != nil {
+		t.Fatalf("InstalledVersions.php should exist: %v", err)
+	}
 }
 
 func TestInstallEmptyPackageList(t *testing.T) {
@@ -233,7 +256,7 @@ func TestInstallEmptyPackageList(t *testing.T) {
 	vendorDir := filepath.Join(t.TempDir(), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(nil, nil, vendorDir); err != nil {
+	if err := inst.Install(nil, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -262,7 +285,7 @@ func TestInstallSkipsSourceOnlyPackage(t *testing.T) {
 	}
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir); err != nil {
+	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -314,7 +337,7 @@ func BenchmarkInstall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		vendorDir := filepath.Join(b.TempDir(), "vendor")
-		if err := inst.Install(packages, nil, vendorDir); err != nil {
+		if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 			b.Fatalf("Install: %v", err)
 		}
 	}
