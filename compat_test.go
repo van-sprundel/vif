@@ -188,7 +188,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil); err != nil {
 		return "", fmt.Errorf("autoload.Generate: %w", err)
 	}
 

@@ -20,22 +20,24 @@ import (
 // newInstallCmd returns the `vif install` command.
 func newInstallCmd() *cobra.Command {
 	var verbose bool
+	var noDev bool
 
 	cmd := &cobra.Command{
 		Use:          "install",
 		Short:        "Install packages from composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(cmd.Context(), verbose)
+			return runInstall(cmd.Context(), verbose, noDev)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
+	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 
 	return cmd
 }
 
-func runInstall(ctx context.Context, verbose bool) error {
+func runInstall(ctx context.Context, verbose, noDev bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -46,9 +48,19 @@ func runInstall(ctx context.Context, verbose bool) error {
 		return fmt.Errorf("failed to read %s: %w", lockfilePath, err)
 	}
 
-	allPackages := append(lf.Packages, lf.PackagesDev...)
+	packages := lf.Packages
+	packagesDev := lf.PackagesDev
+	if noDev {
+		packagesDev = nil
+	}
+
+	allPackages := append(packages, packagesDev...)
 	total := len(allPackages)
-	fmt.Fprintf(w, "Found %d packages (%d prod, %d dev)\n", total, len(lf.Packages), len(lf.PackagesDev))
+	if noDev {
+		fmt.Fprintf(w, "Found %d packages (prod only, --no-dev)\n", total)
+	} else {
+		fmt.Fprintf(w, "Found %d packages (%d prod, %d dev)\n", total, len(packages), len(packagesDev))
+	}
 
 	// 2. Init cache.
 	cacheDir, err := cacheDirectory()
@@ -99,18 +111,25 @@ func runInstall(ctx context.Context, verbose bool) error {
 	inst := installer.New(c)
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir); err != nil {
+	if err := inst.Install(packages, packagesDev, vendorDir); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
 
 	// 5. Generate autoloader.
-	// Check composer.json for optimize-autoloader config.
 	optimized := false
+	var root *autoload.RootAutoload
 	if cj, err := composer.Parse("composer.json"); err == nil {
 		optimized = cj.Config.OptimizeAutoloader
+		root = &autoload.RootAutoload{
+			Name:     cj.Name,
+			Autoload: cj.Autoload,
+		}
+		if !noDev {
+			root.AutoloadDev = cj.AutoloadDev
+		}
 	}
 	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root); err != nil {
 		return fmt.Errorf("autoload: %w", err)
 	}
 	fmt.Fprintln(w, " done")

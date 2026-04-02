@@ -107,8 +107,13 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	// Generate autoloader.
+	root := &autoload.RootAutoload{
+		Name:        cj.Name,
+		Autoload:    cj.Autoload,
+		AutoloadDev: cj.AutoloadDev,
+	}
 	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root); err != nil {
 		return fmt.Errorf("autoload: %w", err)
 	}
 	fmt.Fprintln(w, " done")

@@ -25,7 +25,7 @@ func TestGenerateCreatesAllFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "testhash123", false); err != nil {
+	if err := Generate(vendorDir, packages, "testhash123", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -51,7 +51,7 @@ func TestGenerateCreatesAllFiles(t *testing.T) {
 func TestGenerateAutoloadPHP(t *testing.T) {
 	vendorDir := t.TempDir()
 
-	if err := Generate(vendorDir, nil, "abc123", false); err != nil {
+	if err := Generate(vendorDir, nil, "abc123", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestGeneratePSR4(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h1", false); err != nil {
+	if err := Generate(vendorDir, packages, "h1", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestGeneratePSR0(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h2", false); err != nil {
+	if err := Generate(vendorDir, packages, "h2", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestGenerateFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h3", false); err != nil {
+	if err := Generate(vendorDir, packages, "h3", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestGenerateNoFiles(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h4", false); err != nil {
+	if err := Generate(vendorDir, packages, "h4", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -244,7 +244,7 @@ class Thing {}
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h5", false); err != nil {
+	if err := Generate(vendorDir, packages, "h5", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -288,7 +288,7 @@ class Widget {}
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h7", false); err != nil {
+	if err := Generate(vendorDir, packages, "h7", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -306,7 +306,7 @@ class Widget {}
 func TestGenerateClassLoaderEmbedded(t *testing.T) {
 	vendorDir := t.TempDir()
 
-	if err := Generate(vendorDir, nil, "h6", false); err != nil {
+	if err := Generate(vendorDir, nil, "h6", false, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -343,6 +343,77 @@ func TestFileHash(t *testing.T) {
 	}
 }
 
+func TestGenerateRootAutoload(t *testing.T) {
+	vendorDir := t.TempDir()
+
+	// Vendor package.
+	packages := []pkg.Package{
+		{
+			Name: "monolog/monolog",
+			Autoload: pkg.Autoload{
+				PSR4: map[string][]string{`Monolog\`: {"src/"}},
+			},
+		},
+	}
+	// Create vendor package dir so scanner doesn't fail.
+	os.MkdirAll(filepath.Join(vendorDir, "monolog/monolog/src"), 0o755)
+
+	root := &RootAutoload{
+		Name: "acme/project",
+		Autoload: pkg.Autoload{
+			PSR4:  map[string][]string{`App\`: {"src/"}},
+			Files: []string{"helpers.php"},
+		},
+		AutoloadDev: pkg.Autoload{
+			PSR4: map[string][]string{`Tests\`: {"tests/"}},
+		},
+	}
+
+	if err := Generate(vendorDir, packages, "roothash", false, root); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Check autoload_psr4.php: root paths use $baseDir, vendor paths use $vendorDir.
+	psr4, err := os.ReadFile(filepath.Join(vendorDir, "composer", "autoload_psr4.php"))
+	if err != nil {
+		t.Fatalf("read psr4: %v", err)
+	}
+	psr4Content := string(psr4)
+
+	if !strings.Contains(psr4Content, "$baseDir . '/src/'") {
+		t.Errorf("autoload_psr4.php should use $baseDir for root PSR-4, got:\n%s", psr4Content)
+	}
+	if !strings.Contains(psr4Content, "$baseDir . '/tests/'") {
+		t.Errorf("autoload_psr4.php should use $baseDir for root autoload-dev PSR-4, got:\n%s", psr4Content)
+	}
+	if !strings.Contains(psr4Content, "$vendorDir . '/monolog/monolog/src'") {
+		t.Errorf("autoload_psr4.php should use $vendorDir for vendor PSR-4, got:\n%s", psr4Content)
+	}
+
+	// Check autoload_files.php: root files use $baseDir.
+	filesContent, err := os.ReadFile(filepath.Join(vendorDir, "composer", "autoload_files.php"))
+	if err != nil {
+		t.Fatalf("read files: %v", err)
+	}
+	if !strings.Contains(string(filesContent), "$baseDir . '/helpers.php'") {
+		t.Errorf("autoload_files.php should use $baseDir for root files, got:\n%s", string(filesContent))
+	}
+
+	// Check autoload_static.php: root paths use __DIR__ . '/../..'.
+	staticContent, err := os.ReadFile(filepath.Join(vendorDir, "composer", "autoload_static.php"))
+	if err != nil {
+		t.Fatalf("read static: %v", err)
+	}
+	staticStr := string(staticContent)
+
+	if !strings.Contains(staticStr, "__DIR__ . '/../..' . '/src/'") {
+		t.Errorf("autoload_static.php should use __DIR__/../.. for root paths, got:\n%s", staticStr)
+	}
+	if !strings.Contains(staticStr, "__DIR__ . '/..' . '/monolog/monolog/src'") {
+		t.Errorf("autoload_static.php should use __DIR__/.. for vendor paths, got:\n%s", staticStr)
+	}
+}
+
 func BenchmarkGenerate(b *testing.B) {
 	// Build 100 packages with PSR-4 + files.
 	packages := make([]pkg.Package, 100)
@@ -361,7 +432,7 @@ func BenchmarkGenerate(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		vendorDir := filepath.Join(b.TempDir(), "vendor")
-		if err := Generate(vendorDir, packages, "benchhash", false); err != nil {
+		if err := Generate(vendorDir, packages, "benchhash", false, nil); err != nil {
 			b.Fatalf("Generate: %v", err)
 		}
 	}
