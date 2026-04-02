@@ -287,6 +287,38 @@ func TestChainFallsBackAcrossRepositories(t *testing.T) {
 	}
 }
 
+func TestChainSkipsAuthRequiredRepository(t *testing.T) {
+	publicResp := sampleResponse()
+	publicData, _ := json.Marshal(publicResp)
+
+	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "auth required", http.StatusUnauthorized)
+	}))
+	defer privateSrv.Close()
+
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/acme/foo.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(publicData)
+	}))
+	defer publicSrv.Close()
+
+	chain := packagist.NewChain(
+		packagist.NewClient(privateSrv.URL),
+		packagist.NewClient(publicSrv.URL),
+	)
+
+	versions, err := chain.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+}
+
 func TestFilterPlatformRequirements(t *testing.T) {
 	entry := packagist.VersionEntry{
 		Name:    "acme/foo",
