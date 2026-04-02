@@ -107,6 +107,26 @@ func TestClientGetPackage(t *testing.T) {
 	}
 }
 
+func TestClientGetPackageObjectShapedP2Response(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/urbanheroes-symfony/uh-enhanced-security-bundle.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"packages":{"urbanheroes-symfony/uh-enhanced-security-bundle":{"1.0.0":{"name":"urbanheroes-symfony/uh-enhanced-security-bundle","version":"1.0.0"}}}}`))
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "urbanheroes-symfony/uh-enhanced-security-bundle")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Version != "1.0.0" {
+		t.Fatalf("unexpected versions: %+v", versions)
+	}
+}
+
 func TestClientGetPackageNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -216,8 +236,8 @@ func TestClientCachesNotFound(t *testing.T) {
 		}
 	}
 
-	if requestCount != 1 {
-		t.Fatalf("expected 1 request, got %d", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests, got %d", requestCount)
 	}
 }
 
@@ -269,6 +289,70 @@ func TestClientAppliesComposerAuth(t *testing.T) {
 
 	if _, err := client.GetPackage(context.Background(), "acme/foo"); err != nil {
 		t.Fatalf("GetPackage: %v", err)
+	}
+}
+
+func TestClientFallsBackToComposerIncludes(t *testing.T) {
+	var rootRequests int
+	var includeRequests int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/urbanheroes-sf/asset.json":
+			http.NotFound(w, r)
+		case "/packages.json":
+			rootRequests++
+			_, _ = w.Write([]byte(`{"includes":{"include/all$abc.json":{"sha1":"abc"}}}`))
+		case "/include/all$abc.json":
+			includeRequests++
+			_, _ = w.Write([]byte(`{"packages":{"urbanheroes-sf/asset":{"1.0.0":{"name":"urbanheroes-sf/asset","version":"1.0.0"}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+
+	for range 2 {
+		versions, err := client.GetPackage(context.Background(), "urbanheroes-sf/asset")
+		if err != nil {
+			t.Fatalf("GetPackage: %v", err)
+		}
+		if len(versions) != 1 || versions[0].Version != "1.0.0" {
+			t.Fatalf("unexpected versions: %+v", versions)
+		}
+	}
+
+	if rootRequests != 1 {
+		t.Fatalf("rootRequests = %d, want 1", rootRequests)
+	}
+	if includeRequests != 1 {
+		t.Fatalf("includeRequests = %d, want 1", includeRequests)
+	}
+}
+
+func TestClientIgnoresEmptyArrayRootPackages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			http.NotFound(w, r)
+		case "/packages.json":
+			_, _ = w.Write([]byte(`{"packages":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+
+	_, err := client.GetPackage(context.Background(), "acme/foo")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if !strings.Contains(err.Error(), "package not found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

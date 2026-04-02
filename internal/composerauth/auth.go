@@ -138,7 +138,7 @@ func (c *Config) ApplyRequest(req *http.Request) {
 		return
 	}
 
-	if isGitLabArchiveURL(req.URL) {
+	if isGitLabComposerURL(req.URL) {
 		if token := c.GitLabToken[host]; token != "" {
 			req.Header.Set("Private-Token", token)
 			return
@@ -183,6 +183,20 @@ func isGitLabArchiveURL(u *url.URL) bool {
 	return (host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com")) &&
 		strings.Contains(u.Path, "/api/v4/projects/") &&
 		strings.Contains(u.Path, "/packages/composer/archives/")
+}
+
+func isGitLabComposerURL(u *url.URL) bool {
+	return isGitLabArchiveURL(u) || isGitLabMetadataURL(u)
+}
+
+func isGitLabMetadataURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := normalizeHost(u.Host)
+	return (host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com")) &&
+		strings.Contains(u.Path, "/api/v4/") &&
+		strings.Contains(u.Path, "/packages/composer/")
 }
 
 func (c *Config) empty() bool {
