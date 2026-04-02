@@ -46,7 +46,11 @@ func TestApplyRequestUsesBearerFallback(t *testing.T) {
 
 func TestLoadReadsAuthFilesAndEnv(t *testing.T) {
 	dir := t.TempDir()
+	homeDir := filepath.Join(dir, "home")
 	configDir := filepath.Join(dir, "config")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(configDir, "composer"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -55,6 +59,7 @@ func TestLoadReadsAuthFilesAndEnv(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	t.Setenv("HOME", homeDir)
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("COMPOSER_HOME", "")
 	t.Setenv("COMPOSER_AUTH", `{"bearer":{"repo.example.com":"env-token"}}`)
