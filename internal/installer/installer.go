@@ -50,7 +50,15 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 
 	// Link each package from cache to vendor.
 	for _, p := range all {
-		// Skip packages that do not have a cacheable dist archive yet.
+		if p.Dist.Type == "path" && strings.TrimSpace(p.Dist.URL) != "" {
+			dst := filepath.Join(vendorDir, p.Name)
+			if err := linkPackage(p.Dist.URL, dst); err != nil {
+				return fmt.Errorf("install path package %s: %w", p.Name, err)
+			}
+			continue
+		}
+
+		// Skip packages that do not have a cacheable/installable source yet.
 		if !pkg.RequiresDownload(p) {
 			continue
 		}

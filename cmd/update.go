@@ -70,17 +70,18 @@ func runUpdate(ctx context.Context, verbose bool) error {
 
 	fmt.Fprintf(w, "Resolved %d packages\n", len(resolved))
 
-	// 4. Write composer.lock.
+	// 4. Install resolved packages first so lockfile updates are atomic:
+	// if install fails, we keep the previous composer.lock unchanged.
+	if err := installFromResolved(ctx, w, resolved, cj, verbose, c); err != nil {
+		return err
+	}
+
+	// 5. Write composer.lock after a successful install.
 	lockPath := "composer.lock"
 	if err := lockfile.Generate(lockPath, resolved, cj); err != nil {
 		return fmt.Errorf("write lockfile: %w", err)
 	}
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
-
-	// 5. Install resolved packages (reuse the already-opened cache).
-	if err := installFromResolved(ctx, w, resolved, cj, verbose, c); err != nil {
-		return err
-	}
 
 	ui.PrintSummary(w, len(resolved), start)
 

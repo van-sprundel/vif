@@ -54,6 +54,17 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	allPackages := append(prodPkgs, devPkgs...)
+	projectDir, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("project dir: %w", err)
+	}
+	allPackages, err = applyLocalPathPackages(allPackages, cj.Repositories, projectDir)
+	if err != nil {
+		return fmt.Errorf("path repositories: %w", err)
+	}
+	prodCount := len(prodPkgs)
+	prodPkgs = allPackages[:prodCount]
+	devPkgs = allPackages[prodCount:]
 	total := len(allPackages)
 
 	// Download.
@@ -71,15 +82,16 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	var cached, downloaded, skipped, failed int
-	var skippedPathPackages []string
+	var skippedUnsupported []string
 	for _, r := range results {
 		if r.Err != nil {
 			failed++
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
-			if r.Package.Dist.Type == "path" {
-				skippedPathPackages = append(skippedPathPackages, r.Package.Name)
+			pathInstallable := r.Package.Dist.Type == "path" && strings.TrimSpace(r.Package.Dist.URL) != ""
+			if r.Package.Type != "metapackage" && !pathInstallable {
+				skippedUnsupported = append(skippedUnsupported, fmt.Sprintf("%s (type=%s dist=%s url=%q)", r.Package.Name, r.Package.Type, r.Package.Dist.Type, r.Package.Dist.URL))
 			}
 			progress.Increment(r.Package.Name)
 		} else if r.FromCache {
@@ -95,12 +107,12 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	if failed > 0 {
 		return fmt.Errorf("%d package(s) failed to download", failed)
 	}
-	if len(skippedPathPackages) > 0 {
-		sort.Strings(skippedPathPackages)
+	if len(skippedUnsupported) > 0 {
+		sort.Strings(skippedUnsupported)
 		return fmt.Errorf(
-			"path repositories are not supported yet; skipped %d path package(s): %s",
-			len(skippedPathPackages),
-			strings.Join(skippedPathPackages, ", "),
+			"non-downloadable non-metapackage dependencies are not supported yet; blocked on %d package(s): %s",
+			len(skippedUnsupported),
+			strings.Join(skippedUnsupported, ", "),
 		)
 	}
 
