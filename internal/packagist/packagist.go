@@ -24,7 +24,7 @@ type VersionEntry struct {
 	Version           string          `json:"version"`
 	VersionNormalized string          `json:"version_normalized"`
 	Type              string          `json:"type"`
-	Bin               []string        `json:"bin"`
+	Bin               StringList      `json:"bin"`
 	Require           RelationMap     `json:"require"`
 	RequireDev        RelationMap     `json:"require-dev"`
 	Provide           RelationMap     `json:"provide"`
@@ -34,6 +34,33 @@ type VersionEntry struct {
 	AutoloadDev       json.RawMessage `json:"autoload-dev"`
 	Dist              DistEntry       `json:"dist"`
 	Time              string          `json:"time"`
+}
+
+// StringList tolerates Composer fields that may be encoded as a single string,
+// a list of strings, null, or an empty array.
+type StringList []string
+
+// UnmarshalJSON accepts either "bin.php" or ["bin.php"] shapes.
+func (s *StringList) UnmarshalJSON(data []byte) error {
+	switch strings.TrimSpace(string(data)) {
+	case "", "null", "[]", `""`:
+		*s = nil
+		return nil
+	}
+
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*s = []string{single}
+		return nil
+	}
+
+	var many []string
+	if err := json.Unmarshal(data, &many); err == nil {
+		*s = many
+		return nil
+	}
+
+	return fmt.Errorf("string list: unsupported JSON shape %s", strings.TrimSpace(string(data)))
 }
 
 // RelationMap stores Composer dependency relation fields, which are usually

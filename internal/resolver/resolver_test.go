@@ -399,6 +399,48 @@ func TestResolveProgressReportsUniqueLookups(t *testing.T) {
 	}
 }
 
+func TestResolveMergesDuplicatePendingRequirements(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{
+		"nikic/php-parser":              "^5.0",
+		"romanzipp/php-cs-fixer-config": "^1.0",
+	})
+	reg.add("romanzipp/php-cs-fixer-config", "1.0.0", map[string]string{
+		"nikic/php-parser": "^5.0",
+	})
+	reg.add("nikic/php-parser", "5.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	var seen []string
+	resolved, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seen = append(seen, name)
+	})
+	if err != nil {
+		t.Fatalf("ResolveWithProgress: %v", err)
+	}
+	if len(resolved) != 3 {
+		t.Fatalf("got %d packages, want 3", len(resolved))
+	}
+
+	var phpParserLookups int
+	for _, name := range seen {
+		if name == "nikic/php-parser" {
+			phpParserLookups++
+		}
+	}
+	if phpParserLookups != 1 {
+		t.Fatalf("nikic/php-parser looked up %d times, want 1; seen=%v", phpParserLookups, seen)
+	}
+}
+
 // helpers
 
 func indexByName(pkgs []resolver.ResolvedPackage) map[string]resolver.ResolvedPackage {
