@@ -20,6 +20,7 @@ import (
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // testProject defines a small but realistic set of packages for E2E testing.
@@ -144,19 +145,20 @@ func TestE2EInstall(t *testing.T) {
 	srv := project.serve(t)
 	defer srv.Close()
 
-	projectDir := t.TempDir()
+	projectDir := testhelper.TempDir(t, "project")
 	project.writeLockfile(t, projectDir, srv.URL)
 
 	// Parse lockfile.
 	lf, err := lockfile.Parse(filepath.Join(projectDir, "composer.lock"))
 	if err != nil {
-		t.Fatalf("parse lockfile: %v", err)
+		t.Fatalf("parse: %v", err)
 	}
 
 	allPackages := append(lf.Packages, lf.PackagesDev...)
 
 	// Init cache.
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
+
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -324,10 +326,10 @@ func BenchmarkE2EWarmInstall(b *testing.B) {
 func runFullInstall(tb testing.TB, project testProject, serverURL string) string {
 	tb.Helper()
 
-	projectDir := tb.TempDir()
+	projectDir := testhelper.TempDir(tb, "project")
 	project.writeLockfile(tb, projectDir, serverURL)
 
-	cacheDir := tb.TempDir()
+	cacheDir := testhelper.TempDir(tb, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		tb.Fatalf("cache.New: %v", err)
@@ -363,7 +365,7 @@ func runFullInstall(tb testing.TB, project testProject, serverURL string) string
 func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cacheDir string) {
 	tb.Helper()
 
-	projectDir := tb.TempDir()
+	projectDir := testhelper.TempDir(tb, "project")
 	project.writeLockfile(tb, projectDir, serverURL)
 
 	c, err := cache.New(cacheDir)
@@ -443,7 +445,7 @@ func BenchmarkComposerInstallWarm(b *testing.B) {
 	}
 
 	// Prime composer cache with one run.
-	primedDir := b.TempDir()
+	primedDir := testhelper.TempDir(b, "composer-prime")
 	copyTestFile(b, fixture, filepath.Join(primedDir, "composer.lock"))
 	copyTestFile(b, composerJSON, filepath.Join(primedDir, "composer.json"))
 	prime := exec.Command(composerBin, "install", "--no-scripts", "--no-plugins", "--no-interaction", "--ignore-platform-reqs")
@@ -455,7 +457,7 @@ func BenchmarkComposerInstallWarm(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		dir := b.TempDir()
+		dir := testhelper.TempDir(b, "composer-run")
 		copyTestFile(b, fixture, filepath.Join(dir, "composer.lock"))
 		copyTestFile(b, composerJSON, filepath.Join(dir, "composer.json"))
 
@@ -477,12 +479,12 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 	}
 
 	// Prime vif cache with one run.
-	cacheDir := b.TempDir()
+	cacheDir := testhelper.TempDir(b, "cache")
 	primeVifInstall(b, fixture, cacheDir)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		projectDir := b.TempDir()
+		projectDir := testhelper.TempDir(b, "project")
 		copyTestFile(b, fixture, filepath.Join(projectDir, "composer.lock"))
 
 		c, err := cache.New(cacheDir)
@@ -523,7 +525,7 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 
 func primeVifInstall(tb testing.TB, fixturePath, cacheDir string) {
 	tb.Helper()
-	projectDir := tb.TempDir()
+	projectDir := testhelper.TempDir(tb, "project")
 	copyTestFile(tb, fixturePath, filepath.Join(projectDir, "composer.lock"))
 
 	c, err := cache.New(cacheDir)

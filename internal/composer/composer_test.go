@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/composer"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 func TestParseComposerJSON(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "acme/project",
 		"type": "project",
@@ -63,7 +64,7 @@ func TestParseComposerJSON(t *testing.T) {
 }
 
 func TestParseDefaults(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "test/minimal",
 		"require": {
@@ -93,7 +94,7 @@ func TestParseMissingFile(t *testing.T) {
 }
 
 func TestParseInvalidJSON(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{invalid json!!!`)
 
 	_, err := composer.Parse(filepath.Join(dir, "composer.json"))
@@ -103,7 +104,7 @@ func TestParseInvalidJSON(t *testing.T) {
 }
 
 func TestNonPlatformRequire(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "test/filtered",
 		"require": {
@@ -133,7 +134,7 @@ func TestNonPlatformRequire(t *testing.T) {
 }
 
 func TestNonPlatformRequireDev(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "test/dev",
 		"require-dev": {
@@ -154,7 +155,7 @@ func TestNonPlatformRequireDev(t *testing.T) {
 }
 
 func TestContentHash(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "test/hash",
 		"require": {"acme/foo": "^1.0"},
@@ -179,7 +180,7 @@ func TestContentHash(t *testing.T) {
 }
 
 func TestParseAutoload(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{
 		"name": "acme/project",
 		"autoload": {

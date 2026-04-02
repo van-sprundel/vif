@@ -12,12 +12,13 @@ import (
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // setupCache creates a temp cache and populates it with extracted files for each package.
 func setupCache(t *testing.T, packages []pkg.Package) (*cache.Cache, string) {
 	t.Helper()
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -76,7 +77,7 @@ func TestInstallCreatesVendorLayout(t *testing.T) {
 	c, _ := setupCache(t, packages)
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
 	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
@@ -102,7 +103,7 @@ func TestInstallUsesHardlinks(t *testing.T) {
 	c, _ := setupCache(t, packages)
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
 	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
@@ -135,7 +136,7 @@ func TestInstallRemovesStalePackages(t *testing.T) {
 	c, _ := setupCache(t, packages)
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	// First install with both packages.
 	inst := installer.New(c)
@@ -174,7 +175,7 @@ func TestInstallWritesInstalledJSON(t *testing.T) {
 	c, _ := setupCache(t, allPackages)
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
 	if err := inst.Install(packages, devPackages, vendorDir, &installer.RootPackage{Name: "acme/demo"}); err != nil {
@@ -246,14 +247,14 @@ func TestInstallWritesInstalledJSON(t *testing.T) {
 }
 
 func TestInstallEmptyPackageList(t *testing.T) {
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
 	}
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
 	if err := inst.Install(nil, nil, vendorDir, nil); err != nil {
@@ -267,14 +268,14 @@ func TestInstallEmptyPackageList(t *testing.T) {
 }
 
 func TestInstallSkipsSourceOnlyPackage(t *testing.T) {
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
 	}
 	defer c.Close()
 
-	vendorDir := filepath.Join(t.TempDir(), "vendor")
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 	packages := []pkg.Package{
 		{
 			Name:    "vendor/source-only",
@@ -306,7 +307,7 @@ func BenchmarkInstall(b *testing.B) {
 		}
 	}
 
-	cacheDir := b.TempDir()
+	cacheDir := testhelper.TempDir(b, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		b.Fatalf("cache.New: %v", err)
@@ -336,7 +337,7 @@ func BenchmarkInstall(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		vendorDir := filepath.Join(b.TempDir(), "vendor")
+		vendorDir := filepath.Join(testhelper.TempDir(b, "vendor"), "vendor")
 		if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 			b.Fatalf("Install: %v", err)
 		}

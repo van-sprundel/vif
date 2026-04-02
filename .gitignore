@@ -2,3 +2,4 @@ vif*
 vendor/
 .compat-cache/
 .tmp
+tmp

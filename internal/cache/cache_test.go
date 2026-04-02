@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/cache"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 func TestNew(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -51,7 +52,7 @@ func TestCacheKey(t *testing.T) {
 }
 
 func TestInsertAndLookup(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -104,7 +105,7 @@ func TestInsertAndLookup(t *testing.T) {
 }
 
 func TestInsertUpsert(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -137,7 +138,7 @@ func TestInsertUpsert(t *testing.T) {
 }
 
 func TestPackageDir(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -153,7 +154,7 @@ func TestPackageDir(t *testing.T) {
 }
 
 func TestExtractedDir(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -169,7 +170,7 @@ func TestExtractedDir(t *testing.T) {
 }
 
 func TestHasExtracted(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -196,7 +197,7 @@ func TestHasExtracted(t *testing.T) {
 }
 
 func TestInsertAndLookupMetadata(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -239,7 +240,7 @@ func TestInsertAndLookupMetadata(t *testing.T) {
 }
 
 func TestInsertMetadataUpsert(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -274,7 +275,7 @@ func TestInsertMetadataUpsert(t *testing.T) {
 }
 
 func TestMetadataDifferentRepos(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -310,7 +311,7 @@ func TestMetadataDifferentRepos(t *testing.T) {
 }
 
 func BenchmarkInsert(b *testing.B) {
-	dir := b.TempDir()
+	dir := testhelper.TempDir(b, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		b.Fatalf("New: %v", err)
@@ -324,7 +325,7 @@ func BenchmarkInsert(b *testing.B) {
 }
 
 func BenchmarkLookup(b *testing.B) {
-	dir := b.TempDir()
+	dir := testhelper.TempDir(b, "cache")
 	c, err := cache.New(dir)
 	if err != nil {
 		b.Fatalf("New: %v", err)

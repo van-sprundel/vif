@@ -12,6 +12,7 @@ import (
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/packagist"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // sampleResponse returns a minimal but realistic Packagist p2 response.
@@ -452,7 +453,7 @@ func TestPersistentMetadataCacheETagRoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	// Open a cache in a temp dir.
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	mc, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -509,7 +510,7 @@ func TestPersistentMetadataCacheIgnoresCorruptBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	mc, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)

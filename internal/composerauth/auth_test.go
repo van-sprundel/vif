@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 func TestApplyRequestUsesGitLabTokenForArchives(t *testing.T) {
@@ -65,7 +67,7 @@ func TestApplyRequestUsesBearerFallback(t *testing.T) {
 }
 
 func TestLoadReadsAuthFilesAndEnv(t *testing.T) {
-	dir := t.TempDir()
+	dir := testhelper.TempDir(t, "auth")
 	homeDir := filepath.Join(dir, "home")
 	configDir := filepath.Join(dir, "config")
 	if err := os.MkdirAll(homeDir, 0o755); err != nil {

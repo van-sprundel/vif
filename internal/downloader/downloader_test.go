@@ -18,6 +18,7 @@ import (
 	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
 // makeZip creates an in-memory zip archive containing the given files.
@@ -56,7 +57,7 @@ func TestDownloadSingle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -116,7 +117,7 @@ func TestDownloadParallel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -170,7 +171,7 @@ func TestDownloadCacheHit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -239,7 +240,7 @@ func TestDownloadUsesComposerAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -304,7 +305,7 @@ func TestDownloadShasumMismatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -341,7 +342,7 @@ func TestDownloadHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -378,7 +379,7 @@ func TestDownloadContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -411,7 +412,7 @@ func TestDownloadContextCancellation(t *testing.T) {
 }
 
 func TestDownloadSkipsSourceOnlyPackage(t *testing.T) {
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -482,7 +483,7 @@ func TestDownloadStripsTopLevelPrefix(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cacheDir := t.TempDir()
+	cacheDir := testhelper.TempDir(t, "cache")
 	c, err := cache.New(cacheDir)
 	if err != nil {
 		t.Fatalf("cache.New: %v", err)
@@ -544,7 +545,7 @@ func BenchmarkDownloadParallel(b *testing.B) {
 	for _, workers := range []int{1, 4, 8} {
 		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				cacheDir := b.TempDir()
+				cacheDir := testhelper.TempDir(b, "cache")
 				c, err := cache.New(cacheDir)
 				if err != nil {
 					b.Fatalf("cache.New: %v", err)
