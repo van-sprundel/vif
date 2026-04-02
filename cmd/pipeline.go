@@ -105,9 +105,14 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	// Install to vendor/.
 	vendorDir := filepath.Join(".", "vendor")
 	inst := installer.New(c)
+	rootMeta := &installer.RootPackage{
+		Name:    cj.Name,
+		Version: cj.Version,
+		Type:    cj.Type,
+	}
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
-	if err := inst.Install(prodPkgs, devPkgs, vendorDir); err != nil {
+	if err := inst.Install(prodPkgs, devPkgs, vendorDir, rootMeta); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
 

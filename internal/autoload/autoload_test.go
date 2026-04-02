@@ -257,6 +257,9 @@ class Thing {}
 	if !strings.Contains(content, `'Acme\\Mapper\\Thing'`) {
 		t.Errorf("autoload_classmap.php should contain Acme\\Mapper\\Thing, got:\n%s", content)
 	}
+	if !strings.Contains(content, `'Composer\\InstalledVersions'`) {
+		t.Errorf("autoload_classmap.php should contain Composer\\\\InstalledVersions, got:\n%s", content)
+	}
 }
 
 func TestGeneratePSR4NotInClassmap(t *testing.T) {

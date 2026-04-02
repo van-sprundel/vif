@@ -48,6 +48,25 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 		return fmt.Errorf("failed to read %s: %w", lockfilePath, err)
 	}
 
+	var rootMeta *installer.RootPackage
+	optimized := false
+	var root *autoload.RootAutoload
+	if cj, err := composer.Parse("composer.json"); err == nil {
+		optimized = cj.Config.OptimizeAutoloader
+		rootMeta = &installer.RootPackage{
+			Name:    cj.Name,
+			Version: cj.Version,
+			Type:    cj.Type,
+		}
+		root = &autoload.RootAutoload{
+			Name:     cj.Name,
+			Autoload: cj.Autoload,
+		}
+		if !noDev {
+			root.AutoloadDev = cj.AutoloadDev
+		}
+	}
+
 	packages := lf.Packages
 	packagesDev := lf.PackagesDev
 	if noDev {
@@ -116,23 +135,11 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	inst := installer.New(c)
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
-	if err := inst.Install(packages, packagesDev, vendorDir); err != nil {
+	if err := inst.Install(packages, packagesDev, vendorDir, rootMeta); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
 
 	// 5. Generate autoloader.
-	optimized := false
-	var root *autoload.RootAutoload
-	if cj, err := composer.Parse("composer.json"); err == nil {
-		optimized = cj.Config.OptimizeAutoloader
-		root = &autoload.RootAutoload{
-			Name:     cj.Name,
-			Autoload: cj.Autoload,
-		}
-		if !noDev {
-			root.AutoloadDev = cj.AutoloadDev
-		}
-	}
 	fmt.Fprint(w, "Generating autoload files...")
 	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root); err != nil {
 		return fmt.Errorf("autoload: %w", err)

@@ -14,6 +14,7 @@ import (
 // ComposerJSON represents a parsed composer.json file.
 type ComposerJSON struct {
 	Name             string            `json:"name"`
+	Version          string            `json:"version"`
 	Type             string            `json:"type"`
 	Require          map[string]string `json:"require"`
 	RequireDev       map[string]string `json:"require-dev"`
