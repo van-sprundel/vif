@@ -50,9 +50,11 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 
 	var rootMeta *installer.RootPackage
 	optimized := false
+	prependAutoloader := true
 	var root *autoload.RootAutoload
 	if cj, err := composer.Parse("composer.json"); err == nil {
 		optimized = cj.Config.OptimizeAutoloader
+		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
 		rootMeta = &installer.RootPackage{
 			Name:    cj.Name,
 			Version: cj.Version,
@@ -141,7 +143,7 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 
 	// 5. Generate autoloader.
 	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader); err != nil {
 		return fmt.Errorf("autoload: %w", err)
 	}
 	fmt.Fprintln(w, " done")

@@ -31,7 +31,16 @@ type ComposerJSON struct {
 
 // composerConfig holds the config section of composer.json.
 type composerConfig struct {
-	OptimizeAutoloader bool `json:"optimize-autoloader"`
+	OptimizeAutoloader bool  `json:"optimize-autoloader"`
+	PrependAutoloader  *bool `json:"prepend-autoloader,omitempty"` // default true
+}
+
+// PrependAutoloaderOrDefault returns the prepend-autoloader setting, defaulting to true.
+func (c composerConfig) PrependAutoloaderOrDefault() bool {
+	if c.PrependAutoloader == nil {
+		return true
+	}
+	return *c.PrependAutoloader
 }
 
 // Repository is a Composer repository entry supported by vif.
