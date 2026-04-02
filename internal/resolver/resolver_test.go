@@ -308,6 +308,43 @@ func TestResolveStabilityFiltering(t *testing.T) {
 	}
 }
 
+func TestResolvePreferStable(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0-beta1", nil)
+	reg.add("acme/foo", "1.9.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "dev",
+		PreferStable:     true,
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/foo"].Version != "1.9.0" {
+		t.Errorf("version = %q, want 1.9.0 (stable preferred over beta)", byName["acme/foo"].Version)
+	}
+
+	cj.PreferStable = false
+	resolved, err = resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve without prefer-stable: %v", err)
+	}
+
+	byName = indexByName(resolved)
+	if byName["acme/foo"].Version != "2.0.0-beta1" {
+		t.Errorf("version = %q, want 2.0.0-beta1", byName["acme/foo"].Version)
+	}
+}
+
 func TestResolvePackageNotFound(t *testing.T) {
 	reg := newRegistry()
 	srv := reg.serve(t)

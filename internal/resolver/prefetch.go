@@ -121,7 +121,7 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 // before the providing package is resolved and prematurely triggering a
 // terminal error. Leaving them out of the cache lets the solver's normal
 // deferred-resolution logic handle them.
-func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[string]prefetchResult, minimumStability version.Stability) {
+func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[string]prefetchResult, minimumStability version.Stability, preferStable bool) {
 	for name, result := range prefetched {
 		if result.err != nil {
 			if errors.Is(result.err, packagist.ErrPackageNotFound) {
@@ -145,9 +145,16 @@ func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[s
 			candidates = append(candidates, candidate{entry: entry, version: v})
 		}
 		// Sort descending by version (highest first), matching getCandidates order.
-		sort.Slice(candidates, func(i, j int) bool {
-			return version.Compare(candidates[i].version, candidates[j].version) > 0
-		})
+		sortCandidates(candidates, preferStable)
 		cache[name] = candidateCacheEntry{candidates: candidates}
 	}
+}
+
+func sortCandidates(candidates []candidate, preferStable bool) {
+	sort.Slice(candidates, func(i, j int) bool {
+		if preferStable && candidates[i].version.Stability != candidates[j].version.Stability {
+			return candidates[i].version.Stability > candidates[j].version.Stability
+		}
+		return version.Compare(candidates[i].version, candidates[j].version) > 0
+	})
 }

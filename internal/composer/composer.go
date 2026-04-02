@@ -75,10 +75,31 @@ func (cj *ComposerJSON) NonPlatformRequireDev() map[string]string {
 	return filterPlatform(cj.RequireDev)
 }
 
+// PlatformRequire returns only platform requirements from require.
+func (cj *ComposerJSON) PlatformRequire() map[string]string {
+	return filterOnlyPlatform(cj.Require)
+}
+
+// PlatformRequireDev returns only platform requirements from require-dev.
+func (cj *ComposerJSON) PlatformRequireDev() map[string]string {
+	return filterOnlyPlatform(cj.RequireDev)
+}
+
 func filterPlatform(deps map[string]string) map[string]string {
 	out := make(map[string]string, len(deps))
 	for name, constraint := range deps {
 		if pkg.IsPlatformPackage(name) {
+			continue
+		}
+		out[name] = constraint
+	}
+	return out
+}
+
+func filterOnlyPlatform(deps map[string]string) map[string]string {
+	out := make(map[string]string, len(deps))
+	for name, constraint := range deps {
+		if !pkg.IsPlatformPackage(name) {
 			continue
 		}
 		out[name] = constraint

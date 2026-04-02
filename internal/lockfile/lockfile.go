@@ -21,29 +21,35 @@ type LockFile struct {
 
 // lockFileOut is the full composer.lock JSON structure for writing.
 type lockFileOut struct {
-	Readme           []string        `json:"_readme"`
-	ContentHash      string          `json:"content-hash"`
-	Packages         []lockPkgEntry  `json:"packages"`
-	PackagesDev      []lockPkgEntry  `json:"packages-dev"`
-	Aliases          []interface{}   `json:"aliases"`
-	MinimumStability string          `json:"minimum-stability"`
-	StabilityFlags   json.RawMessage `json:"stability-flags"`
-	PreferStable     bool            `json:"prefer-stable"`
-	PreferLowest     bool            `json:"prefer-lowest"`
-	Platform         json.RawMessage `json:"platform"`
-	PlatformDev      json.RawMessage `json:"platform-dev"`
+	Readme           []string          `json:"_readme"`
+	ContentHash      string            `json:"content-hash"`
+	Packages         []json.RawMessage `json:"packages"`
+	PackagesDev      []json.RawMessage `json:"packages-dev"`
+	Aliases          []interface{}     `json:"aliases"`
+	MinimumStability string            `json:"minimum-stability"`
+	StabilityFlags   json.RawMessage   `json:"stability-flags"`
+	PreferStable     bool              `json:"prefer-stable"`
+	PreferLowest     bool              `json:"prefer-lowest"`
+	Platform         json.RawMessage   `json:"platform"`
+	PlatformDev      json.RawMessage   `json:"platform-dev"`
+	PluginAPIVersion string            `json:"plugin-api-version,omitempty"`
 }
 
 // lockPkgEntry is a single package entry in composer.lock.
 type lockPkgEntry struct {
-	Name       string              `json:"name"`
-	Version    string              `json:"version"`
-	Dist       packagist.DistEntry `json:"dist"`
-	Require    map[string]string   `json:"require,omitempty"`
-	RequireDev map[string]string   `json:"require-dev,omitempty"`
-	Type       string              `json:"type,omitempty"`
-	Autoload   json.RawMessage     `json:"autoload,omitempty"`
-	Time       string              `json:"time,omitempty"`
+	Name        string               `json:"name"`
+	Version     string               `json:"version"`
+	Dist        packagist.DistEntry  `json:"dist"`
+	Require     map[string]string    `json:"require,omitempty"`
+	RequireDev  map[string]string    `json:"require-dev,omitempty"`
+	Provide     map[string]string    `json:"provide,omitempty"`
+	Replace     map[string]string    `json:"replace,omitempty"`
+	Conflict    map[string]string    `json:"conflict,omitempty"`
+	Type        string               `json:"type,omitempty"`
+	Bin         packagist.StringList `json:"bin,omitempty"`
+	Autoload    json.RawMessage      `json:"autoload,omitempty"`
+	AutoloadDev json.RawMessage      `json:"autoload-dev,omitempty"`
+	Time        string               `json:"time,omitempty"`
 }
 
 // Parse reads the composer.lock file at path and returns a parsed LockFile.
@@ -64,34 +70,53 @@ func Parse(path string) (*LockFile, error) {
 
 // Generate creates a composer.lock file from resolved packages and writes it to path.
 func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON) error {
-	var packages, packagesDev []lockPkgEntry
+	existing, _ := loadExistingLockfile(path)
+	var packages, packagesDev []json.RawMessage
 	for _, rp := range resolved {
+		if raw, ok := existing.lookupPackage(rp.Name, rp.Version, rp.Dev); ok {
+			if rp.Dev {
+				packagesDev = append(packagesDev, raw)
+			} else {
+				packages = append(packages, raw)
+			}
+			continue
+		}
+
 		entry := lockPkgEntry{
-			Name:       rp.Name,
-			Version:    rp.Version,
-			Dist:       rp.Entry.Dist,
-			Require:    rp.Entry.Require,
-			RequireDev: rp.Entry.RequireDev,
-			Type:       rp.Entry.Type,
-			Autoload:   rp.Entry.Autoload,
-			Time:       rp.Entry.Time,
+			Name:        rp.Name,
+			Version:     rp.Version,
+			Dist:        rp.Entry.Dist,
+			Require:     rp.Entry.Require,
+			RequireDev:  rp.Entry.RequireDev,
+			Provide:     rp.Entry.Provide,
+			Replace:     rp.Entry.Replace,
+			Conflict:    rp.Entry.Conflict,
+			Type:        rp.Entry.Type,
+			Bin:         rp.Entry.Bin,
+			Autoload:    rp.Entry.Autoload,
+			AutoloadDev: rp.Entry.AutoloadDev,
+			Time:        rp.Entry.Time,
+		}
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("lockfile: marshal package %s@%s: %w", rp.Name, rp.Version, err)
 		}
 		if rp.Dev {
-			packagesDev = append(packagesDev, entry)
+			packagesDev = append(packagesDev, raw)
 		} else {
-			packages = append(packages, entry)
+			packages = append(packages, raw)
 		}
 	}
 
-	sort.Slice(packages, func(i, j int) bool { return packages[i].Name < packages[j].Name })
-	sort.Slice(packagesDev, func(i, j int) bool { return packagesDev[i].Name < packagesDev[j].Name })
+	sortRawPackages(packages)
+	sortRawPackages(packagesDev)
 
 	// Ensure non-nil slices for JSON.
 	if packages == nil {
-		packages = []lockPkgEntry{}
+		packages = []json.RawMessage{}
 	}
 	if packagesDev == nil {
-		packagesDev = []lockPkgEntry{}
+		packagesDev = []json.RawMessage{}
 	}
 
 	lf := lockFileOut{
@@ -108,8 +133,9 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 		StabilityFlags:   json.RawMessage(`{}`),
 		PreferStable:     cj.PreferStable,
 		PreferLowest:     false,
-		Platform:         json.RawMessage(`{}`),
-		PlatformDev:      json.RawMessage(`{}`),
+		Platform:         mustMarshalObject(cj.PlatformRequire()),
+		PlatformDev:      mustMarshalObject(cj.PlatformRequireDev()),
+		PluginAPIVersion: existing.pluginAPIVersion,
 	}
 
 	data, err := json.MarshalIndent(lf, "", "    ")
@@ -123,4 +149,87 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 	}
 
 	return nil
+}
+
+type existingLockfile struct {
+	packageByKey     map[string]json.RawMessage
+	packageDevByKey  map[string]json.RawMessage
+	pluginAPIVersion string
+}
+
+func loadExistingLockfile(path string) (existingLockfile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return existingLockfile{}, nil
+		}
+		return existingLockfile{}, fmt.Errorf("lockfile: read existing %q: %w", path, err)
+	}
+
+	var root struct {
+		Packages         []json.RawMessage `json:"packages"`
+		PackagesDev      []json.RawMessage `json:"packages-dev"`
+		PluginAPIVersion string            `json:"plugin-api-version"`
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return existingLockfile{}, nil
+	}
+
+	return existingLockfile{
+		packageByKey:     indexRawPackages(root.Packages),
+		packageDevByKey:  indexRawPackages(root.PackagesDev),
+		pluginAPIVersion: root.PluginAPIVersion,
+	}, nil
+}
+
+func indexRawPackages(rawPackages []json.RawMessage) map[string]json.RawMessage {
+	index := make(map[string]json.RawMessage, len(rawPackages))
+	for _, raw := range rawPackages {
+		var entry struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		if entry.Name == "" || entry.Version == "" {
+			continue
+		}
+		index[entry.Name+"@"+entry.Version] = raw
+	}
+	return index
+}
+
+func (e existingLockfile) lookupPackage(name, version string, dev bool) (json.RawMessage, bool) {
+	key := name + "@" + version
+	if dev {
+		raw, ok := e.packageDevByKey[key]
+		return raw, ok
+	}
+	raw, ok := e.packageByKey[key]
+	return raw, ok
+}
+
+func sortRawPackages(rawPackages []json.RawMessage) {
+	sort.Slice(rawPackages, func(i, j int) bool {
+		return rawPackageName(rawPackages[i]) < rawPackageName(rawPackages[j])
+	})
+}
+
+func rawPackageName(raw json.RawMessage) string {
+	var entry struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return ""
+	}
+	return entry.Name
+}
+
+func mustMarshalObject(v interface{}) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return data
 }
