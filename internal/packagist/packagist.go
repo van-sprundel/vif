@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/pkg"
 )
@@ -60,6 +61,7 @@ func (v VersionEntry) NonPlatformRequire() map[string]string {
 type cacheEntry struct {
 	etag     string
 	versions []VersionEntry
+	notFound bool
 }
 
 // Client fetches package metadata from a Packagist-compatible API.
@@ -70,11 +72,21 @@ type Client struct {
 	cache      map[string]cacheEntry
 }
 
+const defaultHTTPTimeout = 10 * time.Second
+
 // NewClient creates a Packagist client. baseURL is typically "https://repo.packagist.org".
 func NewClient(baseURL string) *Client {
+	return NewClientWithHTTPClient(baseURL, &http.Client{Timeout: defaultHTTPTimeout})
+}
+
+// NewClientWithHTTPClient creates a Packagist client with a custom HTTP client.
+func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+	}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{},
+		httpClient: httpClient,
 		cache:      make(map[string]cacheEntry),
 	}
 }
@@ -93,6 +105,9 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	c.mu.RLock()
 	cached, hasCached := c.cache[name]
 	c.mu.RUnlock()
+	if hasCached && cached.notFound {
+		return nil, fmt.Errorf("packagist: package %s not found", name)
+	}
 	if hasCached && cached.etag != "" {
 		req.Header.Set("If-None-Match", cached.etag)
 	}
@@ -109,6 +124,9 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
+		c.mu.Lock()
+		c.cache[name] = cacheEntry{notFound: true}
+		c.mu.Unlock()
 		return nil, fmt.Errorf("packagist: package %s not found", name)
 	}
 

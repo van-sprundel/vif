@@ -339,6 +339,41 @@ func TestDownloadContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDownloadSkipsSourceOnlyPackage(t *testing.T) {
+	cacheDir := t.TempDir()
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	packages := []pkg.Package{
+		{
+			Name:    "vendor/source-only",
+			Version: "1.0.0",
+			Dist: pkg.Dist{
+				Type: "zip",
+			},
+		},
+	}
+
+	d := downloader.New(c, 1)
+	results, err := d.Download(context.Background(), packages)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].Err != nil {
+		t.Fatalf("unexpected error: %v", results[0].Err)
+	}
+	if !results[0].Skipped {
+		t.Fatal("expected source-only package to be skipped")
+	}
+}
+
 // makeZipWithPrefix creates a zip where all files are nested under a top-level
 // directory, mimicking how packagist zips are structured.
 func makeZipWithPrefix(t *testing.T, prefix string, files map[string]string) []byte {

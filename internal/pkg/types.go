@@ -3,6 +3,7 @@ package pkg
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Package represents a single entry from composer.lock packages or packages-dev.
@@ -92,4 +93,13 @@ func normalizeStringMap(raw map[string]json.RawMessage) (map[string][]string, er
 		out[k] = multi
 	}
 	return out, nil
+}
+
+// RequiresDownload reports whether a package should be fetched into the cache.
+// Packages without a dist URL are source-only and are skipped for now.
+func RequiresDownload(p Package) bool {
+	if p.Type == "metapackage" || p.Dist.Type == "path" {
+		return false
+	}
+	return strings.TrimSpace(p.Dist.URL) != ""
 }

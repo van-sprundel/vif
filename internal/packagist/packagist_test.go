@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/packagist"
 )
@@ -176,6 +178,45 @@ func TestClientContextCancellation(t *testing.T) {
 	_, err := client.GetPackage(ctx, "acme/foo")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClientWithHTTPClient(srv.URL, &http.Client{Timeout: 20 * time.Millisecond})
+	_, err := client.GetPackage(context.Background(), "acme/foo")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestClientCachesNotFound(t *testing.T) {
+	var requestCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+
+	for range 2 {
+		_, err := client.GetPackage(context.Background(), "missing/pkg")
+		if err == nil {
+			t.Fatal("expected not found error")
+		}
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
 	}
 }
 

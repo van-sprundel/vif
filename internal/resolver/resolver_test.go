@@ -324,6 +324,51 @@ func TestResolvePackageNotFound(t *testing.T) {
 	}
 }
 
+func TestResolveCancellationDuringBacktracking(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "3.0.0", map[string]string{"acme/bar": "^1.0"})
+	reg.add("acme/foo", "2.0.0", map[string]string{"acme/bar": "^1.0"})
+	reg.add("acme/foo", "1.0.0", map[string]string{"acme/bar": "^1.0"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		name := req.URL.Path[len("/p2/") : len(req.URL.Path)-len(".json")]
+		versions, ok := reg.packages[name]
+		if !ok {
+			http.NotFound(w, req)
+			return
+		}
+
+		resp := packagist.APIResponse{
+			Packages: map[string][]packagist.VersionEntry{name: versions},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+
+		if name == "acme/foo" {
+			cancel()
+		}
+	}))
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(ctx, cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected context canceled error, got %v", err)
+	}
+}
+
 // helpers
 
 func indexByName(pkgs []resolver.ResolvedPackage) map[string]resolver.ResolvedPackage {
