@@ -18,7 +18,8 @@ import (
 )
 
 // installFromResolved downloads, installs, and generates autoload for resolved packages.
-func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON, verbose bool) error {
+// c is a pre-opened cache shared with the resolution phase; it must not be nil.
+func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON, verbose bool, c *cache.Cache) error {
 	var prodPkgs, devPkgs []pkg.Package
 	for _, rp := range resolved {
 		p := pkg.Package{
@@ -52,17 +53,6 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 
 	allPackages := append(prodPkgs, devPkgs...)
 	total := len(allPackages)
-
-	// Init cache.
-	cacheDir, err := cacheDirectory()
-	if err != nil {
-		return fmt.Errorf("cache directory: %w", err)
-	}
-	c, err := cache.New(cacheDir)
-	if err != nil {
-		return fmt.Errorf("cache init: %w", err)
-	}
-	defer c.Close()
 
 	// Download.
 	dl := downloader.New(c, 0)

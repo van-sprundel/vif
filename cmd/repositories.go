@@ -7,7 +7,7 @@ import (
 	"github.com/van-sprundel/vif/internal/packagist"
 )
 
-func metadataClient(cj *composer.ComposerJSON) (packagist.Fetcher, error) {
+func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (packagist.Fetcher, error) {
 	auth, err := loadComposerAuth()
 	if err != nil {
 		return nil, err
@@ -23,11 +23,17 @@ func metadataClient(cj *composer.ComposerJSON) (packagist.Fetcher, error) {
 		}
 		client := packagist.NewClient(repo.URL)
 		client.SetAuth(auth)
+		if mc != nil {
+			client.SetMetadataCache(mc)
+		}
 		sources = append(sources, client)
 	}
 
 	packagistClient := packagist.NewClient("https://repo.packagist.org")
 	packagistClient.SetAuth(auth)
+	if mc != nil {
+		packagistClient.SetMetadataCache(mc)
+	}
 	sources = append(sources, packagistClient)
 
 	return packagist.NewChain(sources...), nil

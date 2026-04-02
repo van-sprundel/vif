@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/packagist"
 )
@@ -426,6 +427,113 @@ func TestChainSkipsAuthRequiredRepository(t *testing.T) {
 	}
 	if len(versions) != 3 {
 		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+}
+
+func TestPersistentMetadataCacheETagRoundTrip(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+	var requestCount int
+	var lastIfNoneMatch string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		lastIfNoneMatch = r.Header.Get("If-None-Match")
+		etag := `"etag-persistent"`
+
+		if lastIfNoneMatch == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		w.Header().Set("ETag", etag)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	// Open a cache in a temp dir.
+	cacheDir := t.TempDir()
+	mc, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer mc.Close()
+
+	// First client — cold start, should get a 200 and persist to the cache.
+	client1 := packagist.NewClient(srv.URL)
+	client1.SetMetadataCache(mc)
+
+	versions, err := client1.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("first GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("first: got %d versions, want 3", len(versions))
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request after first call, got %d", requestCount)
+	}
+	if lastIfNoneMatch != "" {
+		t.Fatalf("first request should not send If-None-Match, got %q", lastIfNoneMatch)
+	}
+
+	// Second client — simulates a fresh process with the same on-disk cache.
+	// It has no in-memory cache entry, so it must load the ETag from the persistent cache.
+	client2 := packagist.NewClient(srv.URL)
+	client2.SetMetadataCache(mc)
+
+	versions2, err := client2.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("second GetPackage: %v", err)
+	}
+	if len(versions2) != 3 {
+		t.Fatalf("second: got %d versions, want 3", len(versions2))
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests after second call, got %d", requestCount)
+	}
+	if lastIfNoneMatch != `"etag-persistent"` {
+		t.Fatalf("second request should send If-None-Match=%q, got %q", `"etag-persistent"`, lastIfNoneMatch)
+	}
+}
+
+func TestPersistentMetadataCacheIgnoresCorruptBody(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+	var requestCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("ETag", `"etag-fresh"`)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	mc, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer mc.Close()
+
+	// Pre-populate cache with corrupt JSON body so unmarshal will fail.
+	if err := mc.InsertMetadata(srv.URL, "acme/foo", `"etag-corrupt"`, []byte(`{not valid json`)); err != nil {
+		t.Fatalf("InsertMetadata: %v", err)
+	}
+
+	// Client should fall through to a fresh HTTP request (treating corrupt cache as miss).
+	client := packagist.NewClient(srv.URL)
+	client.SetMetadataCache(mc)
+
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 HTTP request, got %d", requestCount)
 	}
 }
 

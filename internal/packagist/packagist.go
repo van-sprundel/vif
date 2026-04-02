@@ -158,6 +158,13 @@ func (v VersionEntry) NonPlatformRequire() map[string]string {
 	return out
 }
 
+// MetadataCache is an optional persistent store for P2 metadata responses.
+// cache.Cache satisfies this interface directly.
+type MetadataCache interface {
+	LookupMetadata(repoURL, packageName string) (etag string, body []byte, ok bool, err error)
+	InsertMetadata(repoURL, packageName, etag string, body []byte) error
+}
+
 // cacheEntry stores a cached API response with its ETag.
 type cacheEntry struct {
 	etag     string
@@ -196,6 +203,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	auth       *composerauth.Config
+	metaCache  MetadataCache // nil = no persistent cache
 	mu         sync.RWMutex
 	cache      map[string]cacheEntry
 	authErr    bool
@@ -240,6 +248,13 @@ func (c *Client) SetAuth(cfg *composerauth.Config) {
 	c.auth = cfg
 }
 
+// SetMetadataCache wires a persistent metadata cache into the client.
+// When set, getPackageP2 will seed its ETag from the cache on cache misses
+// and persist fresh 200 responses back to the cache.
+func (c *Client) SetMetadataCache(mc MetadataCache) {
+	c.metaCache = mc
+}
+
 // GetPackage fetches all versions of a package from Packagist.
 // Uses ETag-based HTTP caching to avoid redundant downloads.
 func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
@@ -276,6 +291,24 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 }
 
 func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntry, hasCached bool) ([]VersionEntry, error) {
+	// If no in-memory cache hit, try the persistent cache to seed the ETag.
+	if !hasCached && c.metaCache != nil {
+		etag, body, ok, err := c.metaCache.LookupMetadata(c.baseURL, name)
+		if err == nil && ok {
+			var apiResp APIResponse
+			if jsonErr := json.Unmarshal(body, &apiResp); jsonErr == nil {
+				if versions, found := apiResp.Packages[name]; found {
+					cached = cacheEntry{etag: etag, versions: versions}
+					hasCached = true
+					c.mu.Lock()
+					c.cache[name] = cached
+					c.mu.Unlock()
+				}
+			}
+			// On unmarshal failure, fall through to a fresh HTTP request.
+		}
+	}
+
 	url := fmt.Sprintf("%s/p2/%s.json", c.baseURL, name)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -328,6 +361,11 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 	c.mu.Lock()
 	c.cache[name] = cacheEntry{etag: etag, versions: versions}
 	c.mu.Unlock()
+
+	// Persist to durable cache for future process invocations.
+	if c.metaCache != nil {
+		_ = c.metaCache.InsertMetadata(c.baseURL, name, etag, body)
+	}
 
 	return versions, nil
 }

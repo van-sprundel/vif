@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/resolver"
@@ -42,8 +43,19 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	}
 	fmt.Fprintf(w, "Resolving dependencies for %s...\n", cj.Name)
 
-	// 2. Resolve dependencies.
-	client, err := metadataClient(cj)
+	// 2. Open the persistent cache (shared with install phase).
+	cacheDir, err := cacheDirectory()
+	if err != nil {
+		return fmt.Errorf("cache directory: %w", err)
+	}
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		return fmt.Errorf("cache init: %w", err)
+	}
+	defer c.Close()
+
+	// 3. Resolve dependencies.
+	client, err := metadataClient(cj, c)
 	if err != nil {
 		return err
 	}
@@ -58,15 +70,15 @@ func runUpdate(ctx context.Context, verbose bool) error {
 
 	fmt.Fprintf(w, "Resolved %d packages\n", len(resolved))
 
-	// 3. Write composer.lock.
+	// 4. Write composer.lock.
 	lockPath := "composer.lock"
 	if err := lockfile.Generate(lockPath, resolved, cj); err != nil {
 		return fmt.Errorf("write lockfile: %w", err)
 	}
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
 
-	// 4. Install resolved packages.
-	if err := installFromResolved(ctx, w, resolved, cj, verbose); err != nil {
+	// 5. Install resolved packages (reuse the already-opened cache).
+	if err := installFromResolved(ctx, w, resolved, cj, verbose, c); err != nil {
 		return err
 	}
 
