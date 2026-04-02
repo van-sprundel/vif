@@ -45,8 +45,12 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 	classmap := make(map[string]string) // FQCN -> relative file path
 	var files []fileEntry               // deterministic-keyed file entries
 	scanInputs := make([]packageScanInput, 0, len(packages))
+	hasSymfonyRuntime := false
 
 	for _, p := range packages {
+		if p.Name == "symfony/runtime" {
+			hasSymfonyRuntime = true
+		}
 		pkgDir := p.Name // relative to vendor/
 		pkgPath := filepath.Join(vendorDir, pkgDir)
 		excludes := p.Autoload.ExcludeFromClassmap
@@ -192,6 +196,11 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 	autoload := strings.ReplaceAll(autoloadPHP, "<HASH>", hash)
 	if err := os.WriteFile(filepath.Join(vendorDir, "autoload.php"), []byte(autoload), 0o644); err != nil {
 		return fmt.Errorf("autoload: write autoload.php: %w", err)
+	}
+	if hasSymfonyRuntime {
+		if err := os.WriteFile(filepath.Join(vendorDir, "autoload_runtime.php"), []byte(autoloadRuntimePHP), 0o644); err != nil {
+			return fmt.Errorf("autoload: write autoload_runtime.php: %w", err)
+		}
 	}
 
 	return nil
