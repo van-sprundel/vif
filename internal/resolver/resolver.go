@@ -23,12 +23,12 @@ type ResolvedPackage struct {
 
 // Resolve resolves all dependencies from a composer.json using the given Packagist client.
 // Returns a flat list of all resolved packages (including transitive dependencies).
-func Resolve(ctx context.Context, cj *composer.ComposerJSON, client *packagist.Client) ([]ResolvedPackage, error) {
+func Resolve(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher) ([]ResolvedPackage, error) {
 	return ResolveWithProgress(ctx, cj, client, nil)
 }
 
 // ResolveWithProgress resolves dependencies and reports each unique package lookup.
-func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client *packagist.Client, progress func(string)) ([]ResolvedPackage, error) {
+func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher, progress func(string)) ([]ResolvedPackage, error) {
 	r := &resolver{
 		ctx:              ctx,
 		client:           client,
@@ -166,7 +166,7 @@ type conflict struct {
 
 type resolver struct {
 	ctx              context.Context
-	client           *packagist.Client
+	client           packagist.Fetcher
 	minimumStability version.Stability
 	versionCache     map[string]candidateCacheEntry
 	lastConflict     *conflict

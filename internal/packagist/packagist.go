@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/pkg"
 )
 
@@ -138,14 +139,23 @@ type cacheEntry struct {
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	auth       *composerauth.Config
 	mu         sync.RWMutex
 	cache      map[string]cacheEntry
+}
+
+// Fetcher is the metadata interface used by the resolver.
+type Fetcher interface {
+	GetPackage(context.Context, string) ([]VersionEntry, error)
 }
 
 const defaultHTTPTimeout = 10 * time.Second
 
 // ErrPackageNotFound marks a package as absent from the Packagist registry.
 var ErrPackageNotFound = errors.New("packagist: package not found")
+
+// ErrAuthRequired marks a repository as requiring credentials for metadata access.
+var ErrAuthRequired = errors.New("packagist: authentication required")
 
 // NewClient creates a Packagist client. baseURL is typically "https://repo.packagist.org".
 func NewClient(baseURL string) *Client {
@@ -162,6 +172,11 @@ func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
 		httpClient: httpClient,
 		cache:      make(map[string]cacheEntry),
 	}
+}
+
+// SetAuth configures Composer-style auth for metadata requests.
+func (c *Client) SetAuth(cfg *composerauth.Config) {
+	c.auth = cfg
 }
 
 // GetPackage fetches all versions of a package from Packagist.
@@ -184,6 +199,7 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	if hasCached && cached.etag != "" {
 		req.Header.Set("If-None-Match", cached.etag)
 	}
+	c.auth.ApplyRequest(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -201,6 +217,9 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		c.cache[name] = cacheEntry{notFound: true}
 		c.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("%w: %s", ErrAuthRequired, name)
 	}
 
 	if resp.StatusCode != http.StatusOK {

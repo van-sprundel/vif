@@ -17,6 +17,7 @@ type ComposerJSON struct {
 	Type             string            `json:"type"`
 	Require          map[string]string `json:"require"`
 	RequireDev       map[string]string `json:"require-dev"`
+	Repositories     []Repository      `json:"repositories"`
 	Autoload         pkg.Autoload      `json:"autoload"`
 	AutoloadDev      pkg.Autoload      `json:"autoload-dev"`
 	MinimumStability string            `json:"minimum-stability"`
@@ -30,6 +31,12 @@ type ComposerJSON struct {
 // composerConfig holds the config section of composer.json.
 type composerConfig struct {
 	OptimizeAutoloader bool `json:"optimize-autoloader"`
+}
+
+// Repository is a Composer repository entry supported by vif.
+type Repository struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 
 // Parse reads and parses a composer.json file at the given path.
