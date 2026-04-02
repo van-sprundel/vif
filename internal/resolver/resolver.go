@@ -44,14 +44,14 @@ func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client 
 		if err != nil {
 			return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
 		}
-		reqs = append(reqs, requirement{name: name, constraint: c, dev: false})
+		reqs = append(reqs, requirement{name: name, constraint: c, dev: false, root: true})
 	}
 	for name, constraint := range cj.NonPlatformRequireDev() {
 		c, err := version.ParseConstraint(constraint)
 		if err != nil {
 			return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
 		}
-		reqs = append(reqs, requirement{name: name, constraint: c, dev: true})
+		reqs = append(reqs, requirement{name: name, constraint: c, dev: true, root: true})
 	}
 
 	// Sort requirements for deterministic resolution order.
@@ -80,6 +80,7 @@ type requirement struct {
 	name       string
 	constraint version.Constraint
 	dev        bool
+	root       bool
 	deferred   bool // true if already deferred once (prevent infinite loop)
 }
 
@@ -254,6 +255,11 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	candidates, err := r.getCandidates(req.name)
 	if err != nil || len(candidates) == 0 {
 		if err != nil && errors.Is(err, packagist.ErrPackageNotFound) {
+			if !req.deferred && hasPendingRootRequirement(rest) {
+				deferred := req
+				deferred.deferred = true
+				return r.solve(s, append(rest, deferred))
+			}
 			r.terminalErr = fmt.Errorf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", req.name)
 			return false
 		}
@@ -355,7 +361,9 @@ func transitiveReqs(entry packagist.VersionEntry, dev bool) []requirement {
 		}
 		reqs = append(reqs, requirement{name: name, constraint: c, dev: dev})
 	}
-	sort.Slice(reqs, func(i, j int) bool { return reqs[i].name < reqs[j].name })
+	// Visit sibling transitive requirements in a deterministic order that
+	// surfaces missing packages before we recurse into unrelated siblings.
+	sort.Slice(reqs, func(i, j int) bool { return reqs[i].name > reqs[j].name })
 	return reqs
 }
 
@@ -416,10 +424,20 @@ func mergePendingRequirements(req requirement, rest []requirement) (requirement,
 			seen[key] = struct{}{}
 		}
 		req.dev = req.dev && other.dev
+		req.root = req.root || other.root
 		req.deferred = req.deferred || other.deferred
 	}
 
 	return req, filtered, constraints
+}
+
+func hasPendingRootRequirement(reqs []requirement) bool {
+	for _, req := range reqs {
+		if req.root {
+			return true
+		}
+	}
+	return false
 }
 
 func appendConstraintsUnique(existing []version.Constraint, incoming []version.Constraint) []version.Constraint {
