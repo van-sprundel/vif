@@ -369,6 +369,36 @@ func TestResolveCancellationDuringBacktracking(t *testing.T) {
 	}
 }
 
+func TestResolveProgressReportsUniqueLookups(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "1.0.0", map[string]string{"acme/bar": "^1.0"})
+	reg.add("acme/bar", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": "^1.0", "acme/bar": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	var seen []string
+	_, err := resolver.ResolveWithProgress(context.Background(), cj, packagist.NewClient(srv.URL), func(name string) {
+		seen = append(seen, name)
+	})
+	if err != nil {
+		t.Fatalf("ResolveWithProgress: %v", err)
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("got %d progress events, want 2: %v", len(seen), seen)
+	}
+	if seen[0] != "acme/bar" || seen[1] != "acme/foo" {
+		t.Fatalf("progress events = %v, want [acme/bar acme/foo]", seen)
+	}
+}
+
 // helpers
 
 func indexByName(pkgs []resolver.ResolvedPackage) map[string]resolver.ResolvedPackage {

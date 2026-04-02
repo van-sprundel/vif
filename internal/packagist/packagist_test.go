@@ -224,7 +224,7 @@ func TestFilterPlatformRequirements(t *testing.T) {
 	entry := packagist.VersionEntry{
 		Name:    "acme/foo",
 		Version: "1.0.0",
-		Require: map[string]string{
+		Require: packagist.RelationMap{
 			"php":          ">=8.0",
 			"ext-json":     "*",
 			"ext-mbstring": "*",
@@ -242,5 +242,51 @@ func TestFilterPlatformRequirements(t *testing.T) {
 	}
 	if filtered["psr/log"] != "^3.0" {
 		t.Errorf("missing psr/log")
+	}
+}
+
+func TestRelationMapUnmarshalMixedShapes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  packagist.RelationMap
+	}{
+		{
+			name:  "object",
+			input: `{"doctrine/event-manager":"^1|^2"}`,
+			want:  packagist.RelationMap{"doctrine/event-manager": "^1|^2"},
+		},
+		{
+			name:  "string treated as empty",
+			input: `"conflicts-with-nothing"`,
+			want:  nil,
+		},
+		{
+			name:  "empty array treated as empty",
+			input: `[]`,
+			want:  nil,
+		},
+		{
+			name:  "null treated as empty",
+			input: `null`,
+			want:  nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got packagist.RelationMap
+			if err := json.Unmarshal([]byte(tc.input), &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len(got) = %d, want %d", len(got), len(tc.want))
+			}
+			for key, wantValue := range tc.want {
+				if got[key] != wantValue {
+					t.Fatalf("got[%q] = %q, want %q", key, got[key], wantValue)
+				}
+			}
+		})
 	}
 }

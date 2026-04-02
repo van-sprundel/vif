@@ -20,20 +20,62 @@ type APIResponse struct {
 
 // VersionEntry is a single version of a package from Packagist.
 type VersionEntry struct {
-	Name              string            `json:"name"`
-	Version           string            `json:"version"`
-	VersionNormalized string            `json:"version_normalized"`
-	Type              string            `json:"type"`
-	Bin               []string          `json:"bin"`
-	Require           map[string]string `json:"require"`
-	RequireDev        map[string]string `json:"require-dev"`
-	Provide           map[string]string `json:"provide"`
-	Replace           map[string]string `json:"replace"`
-	Conflict          map[string]string `json:"conflict"`
-	Autoload          json.RawMessage   `json:"autoload"`
-	AutoloadDev       json.RawMessage   `json:"autoload-dev"`
-	Dist              DistEntry         `json:"dist"`
-	Time              string            `json:"time"`
+	Name              string          `json:"name"`
+	Version           string          `json:"version"`
+	VersionNormalized string          `json:"version_normalized"`
+	Type              string          `json:"type"`
+	Bin               []string        `json:"bin"`
+	Require           RelationMap     `json:"require"`
+	RequireDev        RelationMap     `json:"require-dev"`
+	Provide           RelationMap     `json:"provide"`
+	Replace           RelationMap     `json:"replace"`
+	Conflict          RelationMap     `json:"conflict"`
+	Autoload          json.RawMessage `json:"autoload"`
+	AutoloadDev       json.RawMessage `json:"autoload-dev"`
+	Dist              DistEntry       `json:"dist"`
+	Time              string          `json:"time"`
+}
+
+// RelationMap stores Composer dependency relation fields, which are usually
+// objects but can appear as null, empty arrays, booleans, or strings in some
+// Packagist payloads. Non-object values are treated as empty.
+type RelationMap map[string]string
+
+// UnmarshalJSON tolerates mixed JSON shapes emitted by Packagist metadata.
+func (m *RelationMap) UnmarshalJSON(data []byte) error {
+	switch strings.TrimSpace(string(data)) {
+	case "", "null", "[]", "false", "true", `""`:
+		*m = nil
+		return nil
+	}
+
+	var obj map[string]string
+	if err := json.Unmarshal(data, &obj); err == nil {
+		*m = obj
+		return nil
+	}
+
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*m = nil
+		return nil
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("relation map: %w", err)
+	}
+
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		var constraint string
+		if err := json.Unmarshal(value, &constraint); err != nil {
+			continue
+		}
+		out[key] = constraint
+	}
+	*m = out
+	return nil
 }
 
 // DistEntry holds dist metadata from Packagist.

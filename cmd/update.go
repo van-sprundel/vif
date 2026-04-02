@@ -45,7 +45,11 @@ func runUpdate(ctx context.Context, verbose bool) error {
 
 	// 2. Resolve dependencies.
 	client := packagist.NewClient("https://repo.packagist.org")
-	resolved, err := resolver.Resolve(ctx, cj, client)
+	progress := ui.NewProgress(w, "Resolving", 0, verbose)
+	resolved, err := resolver.ResolveWithProgress(ctx, cj, client, func(name string) {
+		progress.Increment(name)
+	})
+	progress.Finish()
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
 	}
