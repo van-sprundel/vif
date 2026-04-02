@@ -13,10 +13,22 @@ import (
 	"github.com/van-sprundel/vif/internal/pkg"
 )
 
+// rootPrefix marks paths that are relative to the project root ($baseDir)
+// rather than vendor/. The literal "../" matches the filesystem relationship.
+const rootPrefix = "../"
+
+// RootAutoload holds the root package's autoload configuration and name.
+type RootAutoload struct {
+	Name        string       // root package name (for file hash keys)
+	Autoload    pkg.Autoload // from composer.json "autoload"
+	AutoloadDev pkg.Autoload // from composer.json "autoload-dev"
+}
+
 // Generate creates all autoload PHP files in vendorDir from the given packages.
 // The hash is used as the suffix for class names (typically the content-hash from composer.lock).
 // If optimized is true, PSR-4/PSR-0 classes are scanned into the classmap (like composer dump-autoload -o).
-func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool) error {
+// If root is non-nil, root package autoload entries are included with $baseDir paths.
+func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool, root *RootAutoload) error {
 	composerDir := filepath.Join(vendorDir, "composer")
 	if err := os.MkdirAll(composerDir, 0o755); err != nil {
 		return fmt.Errorf("autoload: mkdir: %w", err)
@@ -77,6 +89,53 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 				key:  key,
 				path: filepath.Join(pkgDir, f),
 			})
+		}
+	}
+
+	// Root package autoload entries use rootPrefix ("../") so generators
+	// emit $baseDir instead of $vendorDir.
+	if root != nil {
+		addRootAutoload := func(al pkg.Autoload) {
+			for ns, paths := range al.PSR4 {
+				for _, path := range paths {
+					psr4[ns] = append(psr4[ns], rootPrefix+path)
+				}
+			}
+			for ns, paths := range al.PSR0 {
+				for _, path := range paths {
+					psr0[ns] = append(psr0[ns], rootPrefix+path)
+				}
+			}
+			for _, f := range al.Files {
+				key := fileHash(root.Name, f)
+				files = append(files, fileEntry{
+					key:  key,
+					path: rootPrefix + f,
+				})
+			}
+		}
+		addRootAutoload(root.Autoload)
+		addRootAutoload(root.AutoloadDev)
+
+		// Root classmap and optimized PSR scanning.
+		projectDir := filepath.Dir(vendorDir)
+		for _, al := range []pkg.Autoload{root.Autoload, root.AutoloadDev} {
+			input := packageScanInput{
+				name:    root.Name,
+				pkgDir:  rootPrefix,
+				pkgPath: projectDir,
+				classmap: append([]string(nil), al.Classmap...),
+				excludes: append([]string(nil), al.ExcludeFromClassmap...),
+			}
+			if optimized {
+				input.psr4 = flattenAutoloadPaths(al.PSR4)
+				input.psr0 = flattenAutoloadPaths(al.PSR0)
+				input.psr4Namespaces = al.PSR4
+				input.psr0Namespaces = al.PSR0
+			}
+			if len(input.classmap) > 0 || len(input.psr4) > 0 || len(input.psr0) > 0 {
+				scanInputs = append(scanInputs, input)
+			}
 		}
 	}
 
@@ -430,6 +489,24 @@ func scanPackageClassmap(input packageScanInput) (map[string]string, packageScan
 	return classmap, stats, nil
 }
 
+// phpPathExpr returns the PHP expression for a path in return-array files.
+// Root paths (prefixed with "../") use $baseDir, vendor paths use $vendorDir.
+func phpPathExpr(path string) string {
+	if strings.HasPrefix(path, rootPrefix) {
+		return "$baseDir . '/" + strings.TrimPrefix(path, rootPrefix) + "'"
+	}
+	return "$vendorDir . '/" + path + "'"
+}
+
+// phpStaticPathExpr returns the PHP expression for a path in autoload_static.php.
+// Root paths use __DIR__ . '/../..', vendor paths use __DIR__ . '/..'.
+func phpStaticPathExpr(path string) string {
+	if strings.HasPrefix(path, rootPrefix) {
+		return "__DIR__ . '/../..' . '/" + strings.TrimPrefix(path, rootPrefix) + "'"
+	}
+	return "__DIR__ . '/..' . '/" + path + "'"
+}
+
 // --- Simple return-array files ---
 
 func generateIncludePaths(paths []string) string {
@@ -451,7 +528,7 @@ func generatePsr4(psr4 map[string][]string) string {
 	for _, ns := range keys {
 		dirs := psr4[ns]
 		for _, dir := range dirs {
-			fmt.Fprintf(&b, "    %s => array($vendorDir . '/%s'),\n", phpString(ns), dir)
+			fmt.Fprintf(&b, "    %s => array(%s),\n", phpString(ns), phpPathExpr(dir))
 		}
 	}
 	return strings.Replace(autoloadPsr4PHP, "<PSR4_ENTRIES>", b.String(), 1)
@@ -463,7 +540,7 @@ func generateNamespaces(psr0 map[string][]string) string {
 	for _, ns := range keys {
 		dirs := psr0[ns]
 		for _, dir := range dirs {
-			fmt.Fprintf(&b, "    %s => array($vendorDir . '/%s'),\n", phpString(ns), dir)
+			fmt.Fprintf(&b, "    %s => array(%s),\n", phpString(ns), phpPathExpr(dir))
 		}
 	}
 	return strings.Replace(autoloadNamespacesPHP, "<PSR0_ENTRIES>", b.String(), 1)
@@ -474,7 +551,7 @@ func generateClassmap(classmap map[string]string) string {
 	keys := sortedMapKeys(classmap)
 	for _, fqcn := range keys {
 		path := classmap[fqcn]
-		fmt.Fprintf(&b, "    %s => $vendorDir . '/%s',\n", phpString(fqcn), path)
+		fmt.Fprintf(&b, "    %s => %s,\n", phpString(fqcn), phpPathExpr(path))
 	}
 	return strings.Replace(autoloadClassmapPHP, "<CLASSMAP_ENTRIES>", b.String(), 1)
 }
@@ -482,7 +559,7 @@ func generateClassmap(classmap map[string]string) string {
 func generateFiles(files []fileEntry) string {
 	var b strings.Builder
 	for _, f := range files {
-		fmt.Fprintf(&b, "    '%s' => $vendorDir . '/%s',\n", f.key, f.path)
+		fmt.Fprintf(&b, "    '%s' => %s,\n", f.key, phpPathExpr(f.path))
 	}
 	return strings.Replace(autoloadFilesPHP, "<FILES_ENTRIES>", b.String(), 1)
 }
@@ -497,7 +574,7 @@ func generateStatic(hash string, psr4 map[string][]string, psr0 map[string][]str
 		var b strings.Builder
 		b.WriteString("    public static $files = array(\n")
 		for _, f := range files {
-			fmt.Fprintf(&b, "        '%s' => __DIR__ . '/..' . '/%s',\n", f.key, f.path)
+			fmt.Fprintf(&b, "        '%s' => %s,\n", f.key, phpStaticPathExpr(f.path))
 		}
 		b.WriteString("    );\n")
 		s = strings.Replace(s, "<STATIC_FILES>", b.String(), 1)
@@ -587,7 +664,7 @@ func buildPrefixDirs(psr4 map[string][]string) string {
 	for _, ns := range keys {
 		fmt.Fprintf(&b, "        %s => array(\n", phpString(ns))
 		for i, dir := range psr4[ns] {
-			fmt.Fprintf(&b, "            %d => __DIR__ . '/..' . '/%s',\n", i, dir)
+			fmt.Fprintf(&b, "            %d => %s,\n", i, phpStaticPathExpr(dir))
 		}
 		b.WriteString("        ),\n")
 	}
@@ -623,7 +700,7 @@ func buildPrefixesPsr0(psr0 map[string][]string) string {
 		for _, ns := range namespaces {
 			fmt.Fprintf(&b, "            %s => array(\n", phpString(ns))
 			for i, dir := range byChar[c][ns] {
-				fmt.Fprintf(&b, "                %d => __DIR__ . '/..' . '/%s',\n", i, dir)
+				fmt.Fprintf(&b, "                %d => %s,\n", i, phpStaticPathExpr(dir))
 			}
 			b.WriteString("            ),\n")
 		}
@@ -638,7 +715,7 @@ func buildStaticClassmap(classmap map[string]string) string {
 	b.WriteString("    public static $classMap = array(\n")
 	keys := sortedMapKeys(classmap)
 	for _, fqcn := range keys {
-		fmt.Fprintf(&b, "        %s => __DIR__ . '/..' . '/%s',\n", phpString(fqcn), classmap[fqcn])
+		fmt.Fprintf(&b, "        %s => %s,\n", phpString(fqcn), phpStaticPathExpr(classmap[fqcn]))
 	}
 	b.WriteString("    );\n")
 	return b.String()

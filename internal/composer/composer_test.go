@@ -178,6 +178,54 @@ func TestContentHash(t *testing.T) {
 	}
 }
 
+func TestParseAutoload(t *testing.T) {
+	dir := t.TempDir()
+	writeJSON(t, dir, `{
+		"name": "acme/project",
+		"autoload": {
+			"psr-4": {
+				"App\\": "src/",
+				"Database\\": ["database/factories/", "database/seeders/"]
+			},
+			"classmap": ["lib/"],
+			"files": ["helpers.php"]
+		},
+		"autoload-dev": {
+			"psr-4": {
+				"Tests\\": "tests/"
+			}
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// PSR-4.
+	if got := cj.Autoload.PSR4["App\\"]; len(got) != 1 || got[0] != "src/" {
+		t.Errorf("Autoload PSR4[App\\] = %v, want [src/]", got)
+	}
+	if got := cj.Autoload.PSR4["Database\\"]; len(got) != 2 {
+		t.Errorf("Autoload PSR4[Database\\] = %v, want 2 entries", got)
+	}
+
+	// Classmap.
+	if len(cj.Autoload.Classmap) != 1 || cj.Autoload.Classmap[0] != "lib/" {
+		t.Errorf("Autoload Classmap = %v, want [lib/]", cj.Autoload.Classmap)
+	}
+
+	// Files.
+	if len(cj.Autoload.Files) != 1 || cj.Autoload.Files[0] != "helpers.php" {
+		t.Errorf("Autoload Files = %v, want [helpers.php]", cj.Autoload.Files)
+	}
+
+	// Autoload-dev.
+	if got := cj.AutoloadDev.PSR4["Tests\\"]; len(got) != 1 || got[0] != "tests/" {
+		t.Errorf("AutoloadDev PSR4[Tests\\] = %v, want [tests/]", got)
+	}
+}
+
 func writeJSON(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(content), 0o644); err != nil {

@@ -17,6 +17,8 @@ type ComposerJSON struct {
 	Type             string            `json:"type"`
 	Require          map[string]string `json:"require"`
 	RequireDev       map[string]string `json:"require-dev"`
+	Autoload         pkg.Autoload      `json:"autoload"`
+	AutoloadDev      pkg.Autoload      `json:"autoload-dev"`
 	MinimumStability string            `json:"minimum-stability"`
 	PreferStable     bool              `json:"prefer-stable"`
 	Config           composerConfig    `json:"config"`
