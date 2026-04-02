@@ -210,7 +210,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		}
 		if matchesAll(v, pendingConstraints) {
 			// Compatible. Track constraint and continue.
-			s.constraints[req.name] = append(s.constraints[req.name], pendingConstraints...)
+			s.constraints[req.name] = appendConstraintsUnique(s.constraints[req.name], pendingConstraints)
 			if existing.dev && !req.dev {
 				existing.dev = false
 				s.resolved[req.name] = existing
@@ -283,7 +283,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		// Try this candidate: snapshot state, resolve transitive deps.
 		snapshot := s.clone()
 		s.resolved[req.name] = resolvedEntry{entry: c.entry, dev: req.dev}
-		s.constraints[req.name] = append(s.constraints[req.name], pendingConstraints...)
+		s.constraints[req.name] = appendConstraintsUnique(s.constraints[req.name], pendingConstraints)
 		s.registerProviders(c.entry)
 
 		// Gather transitive deps.
@@ -384,6 +384,9 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 
 func mergePendingRequirements(req requirement, rest []requirement) (requirement, []requirement, []version.Constraint) {
 	constraints := []version.Constraint{req.constraint}
+	seen := map[string]struct{}{
+		req.constraint.String(): {},
+	}
 	filtered := rest[:0]
 
 	for _, other := range rest {
@@ -391,12 +394,36 @@ func mergePendingRequirements(req requirement, rest []requirement) (requirement,
 			filtered = append(filtered, other)
 			continue
 		}
-		constraints = append(constraints, other.constraint)
+		key := other.constraint.String()
+		if _, ok := seen[key]; !ok {
+			constraints = append(constraints, other.constraint)
+			seen[key] = struct{}{}
+		}
 		req.dev = req.dev && other.dev
 		req.deferred = req.deferred || other.deferred
 	}
 
 	return req, filtered, constraints
+}
+
+func appendConstraintsUnique(existing []version.Constraint, incoming []version.Constraint) []version.Constraint {
+	if len(incoming) == 0 {
+		return existing
+	}
+
+	seen := make(map[string]struct{}, len(existing)+len(incoming))
+	for _, c := range existing {
+		seen[c.String()] = struct{}{}
+	}
+	for _, c := range incoming {
+		key := c.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		existing = append(existing, c)
+		seen[key] = struct{}{}
+	}
+	return existing
 }
 
 func matchesAll(v version.Version, constraints []version.Constraint) bool {
