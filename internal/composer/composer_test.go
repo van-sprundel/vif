@@ -24,6 +24,11 @@ func TestParseComposerJSON(t *testing.T) {
 		},
 		"minimum-stability": "beta",
 		"prefer-stable": true,
+		"extra": {
+			"symfony": {
+				"require": "6.4.*"
+			}
+		},
 		"config": {
 			"sort-packages": true
 		}
@@ -60,6 +65,9 @@ func TestParseComposerJSON(t *testing.T) {
 	}
 	if !cj.PreferStable {
 		t.Error("PreferStable should be true")
+	}
+	if cj.Extra.Symfony.Require != "6.4.*" {
+		t.Errorf("Extra.Symfony.Require = %q, want %q", cj.Extra.Symfony.Require, "6.4.*")
 	}
 }
 

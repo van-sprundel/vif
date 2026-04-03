@@ -24,6 +24,7 @@ type ComposerJSON struct {
 	MinimumStability string            `json:"minimum-stability"`
 	PreferStable     bool              `json:"prefer-stable"`
 	Config           composerConfig    `json:"config"`
+	Extra            composerExtra     `json:"extra"`
 
 	// raw holds the original decoded JSON for content-hash computation.
 	raw map[string]json.RawMessage
@@ -33,6 +34,14 @@ type ComposerJSON struct {
 type composerConfig struct {
 	OptimizeAutoloader bool  `json:"optimize-autoloader"`
 	PrependAutoloader  *bool `json:"prepend-autoloader,omitempty"` // default true
+}
+
+type composerExtra struct {
+	Symfony composerExtraSymfony `json:"symfony"`
+}
+
+type composerExtraSymfony struct {
+	Require string `json:"require"`
 }
 
 // PrependAutoloaderOrDefault returns the prepend-autoloader setting, defaulting to true.
