@@ -129,6 +129,50 @@ func TestClientGetPackageObjectShapedP2Response(t *testing.T) {
 	}
 }
 
+func TestClientGetPackageMinifiedResponseInheritsPreviousFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/symfony/monolog-bundle.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"minified":"composer/2.0",
+			"packages":{
+				"symfony/monolog-bundle":[
+					{
+						"name":"symfony/monolog-bundle",
+						"version":"v3.11.2",
+						"require":{
+							"monolog/monolog":"^1.25.1 || ^2.0 || ^3.0",
+							"symfony/monolog-bridge":"^6.4 || ^7.0"
+						}
+					},
+					{
+						"version":"v3.11.1"
+					}
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "symfony/monolog-bundle")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+
+	if got := versions[1].Require["monolog/monolog"]; got != "^1.25.1 || ^2.0 || ^3.0" {
+		t.Fatalf("v3.11.1 require[monolog/monolog] = %q", got)
+	}
+	if got := versions[1].Require["symfony/monolog-bridge"]; got != "^6.4 || ^7.0" {
+		t.Fatalf("v3.11.1 require[symfony/monolog-bridge] = %q", got)
+	}
+}
+
 func TestClientGetPackageNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

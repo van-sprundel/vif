@@ -320,6 +320,84 @@ func TestResolveSymfonyRequireDoesNotApplyToMonologBundle(t *testing.T) {
 	}
 }
 
+func TestResolveLockedMonologBundleKeepsInheritedTransitiveRequirements(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/p2/symfony/monolog-bundle.json":
+			_, _ = w.Write([]byte(`{
+				"minified":"composer/2.0",
+				"packages":{
+					"symfony/monolog-bundle":[
+						{
+							"name":"symfony/monolog-bundle",
+							"version":"v3.11.2",
+							"require":{
+								"monolog/monolog":"^1.25.1 || ^2.0 || ^3.0",
+								"symfony/monolog-bridge":"^6.4 || ^7.0"
+							}
+						},
+						{
+							"version":"v3.11.1"
+						}
+					]
+				}
+			}`))
+		case "/p2/symfony/monolog-bridge.json":
+			_, _ = w.Write([]byte(`{
+				"packages":{
+					"symfony/monolog-bridge":[
+						{
+							"name":"symfony/monolog-bridge",
+							"version":"v6.4.36",
+							"require":{
+								"monolog/monolog":"^1.25.1|^2|^3"
+							}
+						}
+					]
+				}
+			}`))
+		case "/p2/monolog/monolog.json":
+			_, _ = w.Write([]byte(`{
+				"packages":{
+					"monolog/monolog":[
+						{
+							"name":"monolog/monolog",
+							"version":"3.10.0"
+						}
+					]
+				}
+			}`))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/monolog-bundle": "^3.11"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		Locked: map[string]string{"symfony/monolog-bundle": "v3.11.1"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["symfony/monolog-bundle"].Version != "v3.11.1" {
+		t.Fatalf("monolog-bundle = %q, want locked v3.11.1", byName["symfony/monolog-bundle"].Version)
+	}
+	if byName["symfony/monolog-bridge"].Version != "v6.4.36" {
+		t.Fatalf("monolog-bridge = %q, want v6.4.36", byName["symfony/monolog-bridge"].Version)
+	}
+	if byName["monolog/monolog"].Version != "3.10.0" {
+		t.Fatalf("monolog = %q, want 3.10.0", byName["monolog/monolog"].Version)
+	}
+}
+
 func TestResolveUnsatisfiable(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "1.0.0", nil)
