@@ -205,6 +205,49 @@ func TestContentHash(t *testing.T) {
 	}
 }
 
+func TestContentHashMatchesComposerEncoding(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "urbanheroes/lely-portal",
+		"minimum-stability": "dev",
+		"prefer-stable": true,
+		"repositories": [
+			{
+				"type": "composer",
+				"url": "https://satis.urban-heroes.nl"
+			}
+		],
+		"require": {
+			"php": "^8.4",
+			"ext-ctype": "*",
+			"twig/twig": "^3.0"
+		},
+		"require-dev": {
+			"phpunit/phpunit": "^9.5"
+		},
+		"replace": {
+			"symfony/polyfill-ctype": "*"
+		},
+		"conflict": {
+			"symfony/symfony": "*"
+		},
+		"extra": {
+			"symfony": {
+				"require": "6.4.*"
+			}
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if got, want := cj.ContentHash(), "d6b6131078f23834264581696f61554e"; got != want {
+		t.Fatalf("ContentHash() = %q, want %q", got, want)
+	}
+}
+
 func TestParseAutoload(t *testing.T) {
 	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{

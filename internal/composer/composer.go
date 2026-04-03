@@ -1,6 +1,7 @@
 package composer
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -152,6 +153,14 @@ func (cj *ComposerJSON) ContentHash() string {
 			relevant[key] = val
 		}
 	}
+	if configRaw, ok := cj.raw["config"]; ok {
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(configRaw, &config); err == nil {
+			if platformRaw, ok := config["platform"]; ok {
+				relevant["config"] = json.RawMessage(`{"platform":` + string(platformRaw) + `}`)
+			}
+		}
+	}
 
 	// Sort keys for deterministic output.
 	keys := make([]string, 0, len(relevant))
@@ -170,12 +179,25 @@ func (cj *ComposerJSON) ContentHash() string {
 		keyJSON, _ := json.Marshal(k)
 		buf.Write(keyJSON)
 		buf.WriteByte(':')
-		buf.Write(relevant[k])
+		buf.Write(phpJSON(relevant[k]))
 	}
 	buf.WriteByte('}')
 
 	hash := md5.Sum([]byte(buf.String()))
 	return fmt.Sprintf("%x", hash)
+}
+
+func phpJSON(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return []byte("null")
+	}
+
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return raw
+	}
+
+	return bytes.ReplaceAll(compact.Bytes(), []byte("/"), []byte(`\/`))
 }
 
 // AddRequire adds or updates a package in the require section.
