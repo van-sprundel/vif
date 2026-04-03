@@ -21,7 +21,7 @@ import (
 
 // installFromResolved downloads, installs, and generates autoload for resolved packages.
 // c is a pre-opened cache shared with the resolution phase; it must not be nil.
-func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON, verbose bool, c *cache.Cache) error {
+func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON, verbose bool, noAutoloader bool, c *cache.Cache) error {
 	var prodPkgs, devPkgs []pkg.Package
 	for _, rp := range resolved {
 		p := pkg.Package{
@@ -152,11 +152,15 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 		Autoload:    cj.Autoload,
 		AutoloadDev: cj.AutoloadDev,
 	}
-	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault()); err != nil {
-		return fmt.Errorf("autoload: %w", err)
+	if noAutoloader {
+		fmt.Fprintln(w, "Skipping autoload generation (--no-autoloader)")
+	} else {
+		fmt.Fprint(w, "Generating autoload files...")
+		if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault()); err != nil {
+			return fmt.Errorf("autoload: %w", err)
+		}
+		fmt.Fprintln(w, " done")
 	}
-	fmt.Fprintln(w, " done")
 
 	return nil
 }

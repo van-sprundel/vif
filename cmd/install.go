@@ -24,23 +24,25 @@ import (
 func newInstallCmd() *cobra.Command {
 	var verbose bool
 	var noDev bool
+	var noAutoloader bool
 
 	cmd := &cobra.Command{
 		Use:          "install",
 		Short:        "Install packages from composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(cmd.Context(), verbose, noDev)
+			return runInstall(cmd.Context(), verbose, noDev, noAutoloader)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
+	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
 
 	return cmd
 }
 
-func runInstall(ctx context.Context, verbose, noDev bool) error {
+func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -182,11 +184,15 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	}
 
 	// 5. Generate autoloader.
-	fmt.Fprint(w, "Generating autoload files...")
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader); err != nil {
-		return fmt.Errorf("autoload: %w", err)
+	if noAutoloader {
+		fmt.Fprintln(w, "Skipping autoload generation (--no-autoloader)")
+	} else {
+		fmt.Fprint(w, "Generating autoload files...")
+		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader); err != nil {
+			return fmt.Errorf("autoload: %w", err)
+		}
+		fmt.Fprintln(w, " done")
 	}
-	fmt.Fprintln(w, " done")
 
 	// 6. Summary.
 	ui.PrintSummary(w, total, start)
