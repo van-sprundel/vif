@@ -18,8 +18,9 @@ import (
 // newRequireCmd returns the `vif require` command.
 func newRequireCmd() *cobra.Command {
 	var (
-		dev     bool
-		verbose bool
+		dev          bool
+		verbose      bool
+		noAutoloader bool
 	)
 
 	cmd := &cobra.Command{
@@ -28,17 +29,18 @@ func newRequireCmd() *cobra.Command {
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRequire(cmd.Context(), args, dev, verbose)
+			return runRequire(cmd.Context(), args, dev, verbose, noAutoloader)
 		},
 	}
 
 	cmd.Flags().BoolVar(&dev, "dev", false, "add packages to require-dev")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
+	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
 
 	return cmd
 }
 
-func runRequire(ctx context.Context, args []string, dev, verbose bool) error {
+func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -103,7 +105,7 @@ func runRequire(ctx context.Context, args []string, dev, verbose bool) error {
 
 	// 6. Run install pipeline first so lockfile updates are atomic:
 	// if install fails, we keep the previous composer.lock unchanged.
-	if err := installFromResolved(ctx, w, resolved, cj, verbose, c); err != nil {
+	if err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c); err != nil {
 		return err
 	}
 

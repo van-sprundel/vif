@@ -19,22 +19,24 @@ import (
 // newUpdateCmd returns the `vif update` command.
 func newUpdateCmd() *cobra.Command {
 	var verbose bool
+	var noAutoloader bool
 
 	cmd := &cobra.Command{
 		Use:          "update",
 		Short:        "Resolve dependencies and update composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdate(cmd.Context(), verbose)
+			return runUpdate(cmd.Context(), verbose, noAutoloader)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
+	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
 
 	return cmd
 }
 
-func runUpdate(ctx context.Context, verbose bool) error {
+func runUpdate(ctx context.Context, verbose bool, noAutoloader bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -81,7 +83,7 @@ func runUpdate(ctx context.Context, verbose bool) error {
 
 	// 4. Install resolved packages first so lockfile updates are atomic:
 	// if install fails, we keep the previous composer.lock unchanged.
-	if err := installFromResolved(ctx, w, resolved, cj, verbose, c); err != nil {
+	if err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c); err != nil {
 		return err
 	}
 
