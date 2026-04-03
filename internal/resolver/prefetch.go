@@ -122,7 +122,11 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 // before the providing package is resolved and prematurely triggering a
 // terminal error. Leaving them out of the cache lets the solver's normal
 // deferred-resolution logic handle them.
-func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[string]prefetchResult, minimumStability version.Stability, preferStable bool) {
+//
+// Note: Stability filtering is NOT applied here. All parseable versions are cached.
+// Stability filtering happens at retrieval time via getCandidates to support
+// per-requirement stability overrides (e.g., @dev, @alpha flags).
+func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[string]prefetchResult, preferStable bool) {
 	for name, result := range prefetched {
 		if result.err != nil {
 			if errors.Is(result.err, packagist.ErrPackageNotFound) {
@@ -138,9 +142,6 @@ func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[s
 		for _, entry := range result.versions {
 			v, err := version.Parse(entry.Version)
 			if err != nil {
-				continue
-			}
-			if !v.StabilityAtLeast(minimumStability) {
 				continue
 			}
 			candidates = append(candidates, candidate{entry: entry, version: v})
