@@ -131,7 +131,7 @@ func (tp testProject) writeLockfile(tb testing.TB, dir, serverURL string) {
 		lf.PackagesDev = append(lf.PackagesDev, toPkg(p))
 	}
 
-	data, err := json.MarshalIndent(lf, "", "    ")
+	data, err := marshalJSONIndent(lf, "", "    ")
 	if err != nil {
 		tb.Fatalf("marshal lockfile: %v", err)
 	}
@@ -588,4 +588,15 @@ func (tp testProject) serve(tb testing.TB) *httptest.Server {
 		}
 		_, _ = w.Write(data)
 	}))
+}
+
+func marshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent(prefix, indent)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -556,12 +557,68 @@ func TestGenerateEmpty(t *testing.T) {
 	var lf map[string]json.RawMessage
 	json.Unmarshal(data, &lf)
 
-	// Empty packages should be [] not null.
 	if string(lf["packages"]) != "[]" {
 		t.Errorf("packages = %s, want []", lf["packages"])
 	}
 	if string(lf["packages-dev"]) != "[]" {
 		t.Errorf("packages-dev = %s, want []", lf["packages-dev"])
+	}
+}
+
+func TestGenerateNoHTMLEscape(t *testing.T) {
+	dir := testhelper.TempDir(t, "lockfile")
+	path := filepath.Join(dir, "composer.lock")
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"php": ">=8.1"},
+		MinimumStability: "stable",
+		PreferStable:     true,
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "acme/foo",
+			Version: "1.0.0",
+			Entry: packagist.VersionEntry{
+				Name:     "acme/foo",
+				Version:  "1.0.0",
+				Type:     "library",
+				Require:  map[string]string{"php": ">=8.1", "ext-json": "*"},
+				Conflict: map[string]string{"acme/bar": "<2.0", "acme/baz": ">=3.0 <4.0"},
+				Dist: packagist.DistEntry{
+					URL:       "https://example.com/acme/foo/1.0.0.zip",
+					Type:      "zip",
+					Reference: "abc123",
+				},
+			},
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	raw := string(data)
+	if strings.Contains(raw, `\u003c`) {
+		t.Error("lockfile contains \\u003c (escaped <), should be raw <")
+	}
+	if strings.Contains(raw, `\u003e`) {
+		t.Error("lockfile contains \\u003e (escaped >), should be raw >")
+	}
+	if !strings.Contains(raw, `>=8.1`) {
+		t.Error("lockfile missing >=8.1 constraint")
+	}
+	if !strings.Contains(raw, `<2.0`) {
+		t.Error("lockfile missing <2.0 constraint")
+	}
+	if !strings.Contains(raw, `>=3.0 <4.0`) {
+		t.Error("lockfile missing >=3.0 <4.0 constraint")
 	}
 }
 

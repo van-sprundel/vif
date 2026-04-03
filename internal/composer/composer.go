@@ -162,21 +162,19 @@ func (cj *ComposerJSON) ContentHash() string {
 		}
 	}
 
-	// Sort keys for deterministic output.
 	keys := make([]string, 0, len(relevant))
 	for k := range relevant {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Build sorted JSON object.
 	var buf strings.Builder
 	buf.WriteByte('{')
 	for i, k := range keys {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		keyJSON, _ := json.Marshal(k)
+		keyJSON, _ := marshalJSON(k)
 		buf.Write(keyJSON)
 		buf.WriteByte(':')
 		buf.Write(phpJSON(relevant[k]))
@@ -220,7 +218,7 @@ func (cj *ComposerJSON) AddRequireDev(name, constraint string) {
 
 // syncRaw updates the raw JSON map for content-hash recomputation.
 func (cj *ComposerJSON) syncRaw(key string, val interface{}) {
-	data, err := json.Marshal(val)
+	data, err := marshalJSON(val)
 	if err != nil {
 		return
 	}
@@ -275,11 +273,11 @@ func (cj *ComposerJSON) Write(path string) error {
 
 	// Override require and require-dev with current values.
 	if cj.Require != nil {
-		data, _ := json.Marshal(cj.Require)
+		data, _ := marshalJSON(cj.Require)
 		out["require"] = json.RawMessage(data)
 	}
 	if cj.RequireDev != nil {
-		data, _ := json.Marshal(cj.RequireDev)
+		data, _ := marshalJSON(cj.RequireDev)
 		out["require-dev"] = json.RawMessage(data)
 	}
 
@@ -321,7 +319,7 @@ func marshalOrdered(m map[string]json.RawMessage) ([]byte, error) {
 		if i > 0 {
 			buf.WriteString(",\n")
 		}
-		keyJSON, _ := json.Marshal(k)
+		keyJSON, _ := marshalJSON(k)
 		// Indent the value properly.
 		val, err := indentValue(m[k])
 		if err != nil {
@@ -342,9 +340,30 @@ func indentValue(raw json.RawMessage) ([]byte, error) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, err
 	}
-	data, err := json.MarshalIndent(v, "    ", "    ")
+	data, err := marshalJSONIndent(v, "    ", "    ")
 	if err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+
+func marshalJSON(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
+}
+
+func marshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent(prefix, indent)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

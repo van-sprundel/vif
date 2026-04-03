@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -330,7 +331,7 @@ func writeInstalledMetadata(vendorDir string, packages, devPackages []pkg.Packag
 		return installed.Packages[i].Name < installed.Packages[j].Name
 	})
 
-	data, err := json.MarshalIndent(installed, "", "    ")
+	data, err := marshalJSONIndent(installed, "", "    ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
@@ -843,3 +844,14 @@ final class InstalledVersions
     }
 }
 `
+
+func marshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent(prefix, indent)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
