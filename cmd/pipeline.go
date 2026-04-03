@@ -62,6 +62,7 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	if err != nil {
 		return fmt.Errorf("path repositories: %w", err)
 	}
+	allPackages = promoteSourceToDist(allPackages, projectDir)
 	prodCount := len(prodPkgs)
 	prodPkgs = allPackages[:prodCount]
 	devPkgs = allPackages[prodCount:]
@@ -89,8 +90,7 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
-			pathInstallable := r.Package.Dist.Type == "path" && strings.TrimSpace(r.Package.Dist.URL) != ""
-			if r.Package.Type != "metapackage" && !pathInstallable {
+			if !pkg.IsInstallable(r.Package) {
 				skippedUnsupported = append(skippedUnsupported, fmt.Sprintf("%s (type=%s dist=%s url=%q)", r.Package.Name, r.Package.Type, r.Package.Dist.Type, r.Package.Dist.URL))
 			}
 			progress.Increment(r.Package.Name)

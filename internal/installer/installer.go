@@ -58,7 +58,17 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 			continue
 		}
 
-		// Skip packages that do not have a cacheable/installable source yet.
+		if pkg.RequiresGitClone(p) {
+			key := cache.CacheKey(p.Source.URL + "@" + p.Source.Reference)
+			src := inst.cache.ExtractedDir(key)
+			dst := filepath.Join(vendorDir, p.Name)
+			if err := linkPackage(src, dst); err != nil {
+				return fmt.Errorf("install %s: %w", p.Name, err)
+			}
+			continue
+		}
+
+		// Skip packages that do not have a cacheable/installable source.
 		if !pkg.RequiresDownload(p) {
 			continue
 		}
