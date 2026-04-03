@@ -532,6 +532,56 @@ func TestDownloadStripsTopLevelPrefix(t *testing.T) {
 	}
 }
 
+func TestDownloadRetriesOnTransientError(t *testing.T) {
+	zipData := makeZip(t, map[string]string{
+		"src/Retry.php": "<?php class Retry {}",
+	})
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	cacheDir := testhelper.TempDir(t, "cache")
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	packages := []pkg.Package{
+		{
+			Name:    "vendor/retry",
+			Version: "1.0.0",
+			Dist: pkg.Dist{
+				Type:      "zip",
+				URL:       srv.URL + "/retry.zip",
+				Reference: "abc123",
+			},
+		},
+	}
+
+	d := downloader.New(c, 1)
+	results, err := d.Download(context.Background(), packages)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+
+	if results[0].Err != nil {
+		t.Fatalf("result error: %v", results[0].Err)
+	}
+
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("expected 3 attempts, got %d", got)
+	}
+}
+
 func BenchmarkDownloadParallel(b *testing.B) {
 	zipData := makeZipB(b, map[string]string{
 		"src/Bench.php": "<?php class Bench {}",

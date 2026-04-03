@@ -102,6 +102,29 @@ func TestExtractArchiveUnsupportedType(t *testing.T) {
 	}
 }
 
+func TestIsRetryableStatus(t *testing.T) {
+	tests := []struct {
+		code int
+		want bool
+	}{
+		{200, false},
+		{400, false},
+		{401, false},
+		{403, false},
+		{404, false},
+		{429, true},
+		{500, true},
+		{502, true},
+		{503, true},
+		{504, true},
+	}
+	for _, tt := range tests {
+		if got := isRetryableStatus(tt.code); got != tt.want {
+			t.Errorf("isRetryableStatus(%d) = %v, want %v", tt.code, got, tt.want)
+		}
+	}
+}
+
 func makeTarGz(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	return makeTarGzWithPrefix(t, "", files)
