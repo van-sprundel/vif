@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/van-sprundel/vif/internal/version"
 )
 
-const defaultPrefetchWorkers = 8
+var defaultPrefetchWorkers = min(runtime.NumCPU(), 16)
 
 // prefetchResult holds the fetched metadata for one package.
 type prefetchResult struct {
