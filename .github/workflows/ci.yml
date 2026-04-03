@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  compat:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+      - name: Fetch compat fixtures
+        run: bash testdata/fixtures/compat/fetch.sh
+      - name: Restore vif package cache
+        id: cache-restore
+        uses: actions/cache@v4
+        with:
+          path: /tmp/vif-compat-ci-cache
+          key: vif-compat-cache-${{ hashFiles('testdata/fixtures/compat/*/composer.lock') }}
+          restore-keys: |
+            vif-compat-cache-
+      - name: Run compat tests
+        env:
+          VIF_COMPAT_CACHE_DIR: /tmp/vif-compat-ci-cache
+          VIF_TEST_TEMP_DIR: /tmp/vif-compat-ci-tmp
+        run: go test -tags compat -v -timeout 30m -run 'TestCompat$' ./...
+      - name: Run compat summary
+        if: always()
+        env:
+          VIF_COMPAT_CACHE_DIR: /tmp/vif-compat-ci-cache
+          VIF_TEST_TEMP_DIR: /tmp/vif-compat-ci-tmp
+        run: go test -tags compat -v -timeout 30m -run TestCompatSummary ./...
+
+  compat-update:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+      - name: Fetch compat fixtures
+        run: bash testdata/fixtures/compat/fetch.sh
+      - name: Restore vif package cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/vif-compat-ci-cache
+          key: vif-compat-cache-${{ hashFiles('testdata/fixtures/compat/*/composer.lock') }}
+          restore-keys: |
+            vif-compat-cache-
+      - name: Run compat update tests
+        env:
+          VIF_COMPAT_CACHE_DIR: /tmp/vif-compat-ci-cache
+          VIF_TEST_TEMP_DIR: /tmp/vif-compat-ci-tmp
+        run: go test -tags compat -v -timeout 30m -run TestCompatUpdateLockfile ./...
+
+  bench:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run benchmarks
+        run: |
+          go test -run='^$' -bench=. -benchmem -count=5 -timeout 20m ./internal/... ./... 2>&1 | tee bench-results.txt
+      - name: Check for regressions
+        run: |
+          if [ ! -f misc/bench_baseline.txt ]; then
+            echo "No baseline found at misc/bench_baseline.txt — skipping regression check"
+            echo "To create one: go test -run='^$' -bench=. -benchmem -count=5 ./internal/... ./... > misc/bench_baseline.txt"
+            exit 0
+          fi
+          go install golang.org/x/perf/cmd/benchstat@latest
+          benchstat misc/bench_baseline.txt bench-results.txt > benchstat-output.txt 2>&1 || true
+          cat benchstat-output.txt
+          if grep -q '~' benchstat-output.txt; then
+            echo ""
+            echo "=== Potential regressions detected (marked with ~) ==="
+            echo "Review the benchstat output above. If acceptable, update the baseline:"
+            echo "  cp bench-results.txt misc/bench_baseline.txt"
+          fi
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            bench-results.txt
+            benchstat-output.txt
+          retention-days: 30

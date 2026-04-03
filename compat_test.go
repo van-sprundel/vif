@@ -75,10 +75,20 @@ var sharedCompatBinary struct {
 }
 
 // getSharedCache returns a shared cache dir, initialising it once per test run.
-// Set VIF_TEST_TEMP_DIR or VIF_COMPAT_CACHE_DIR to override the default repo-local cache location.
+// Set VIF_COMPAT_CACHE_DIR to use a specific directory as the vif cache directly
+// (not cleaned up — useful for CI caching). Otherwise falls back to a temp dir
+// under VIF_TEST_TEMP_DIR or ./tmp/vif-test.
 func getSharedCache(t *testing.T) (string, error) {
 	t.Helper()
 	sharedCompatCache.once.Do(func() {
+		if dir := os.Getenv("VIF_COMPAT_CACHE_DIR"); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				sharedCompatCache.initErr = fmt.Errorf("create cache dir %s: %w", dir, err)
+				return
+			}
+			sharedCompatCache.dir = dir
+			return
+		}
 		base, err := testhelper.GetTestTempBase()
 		if err != nil {
 			sharedCompatCache.initErr = err

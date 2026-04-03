@@ -20,10 +20,6 @@ func GetTestTempBase() (string, error) {
 	testTempBase.once.Do(func() {
 		base := os.Getenv("VIF_TEST_TEMP_DIR")
 		if base == "" {
-			// Also check VIF_COMPAT_CACHE_DIR for backward compatibility/consistency
-			base = os.Getenv("VIF_COMPAT_CACHE_DIR")
-		}
-		if base == "" {
 			// Default to a directory in the project root's tmp.
 			base = filepath.Join(".", "tmp", "vif-test")
 		}
