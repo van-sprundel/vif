@@ -1,6 +1,7 @@
 package lockfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -99,7 +100,7 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 			AutoloadDev: rp.Entry.AutoloadDev,
 			Time:        rp.Entry.Time,
 		}
-		raw, err := json.Marshal(entry)
+		raw, err := marshalJSON(entry)
 		if err != nil {
 			return fmt.Errorf("lockfile: marshal package %s@%s: %w", rp.Name, rp.Version, err)
 		}
@@ -140,7 +141,7 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 		PluginAPIVersion: existing.pluginAPIVersion,
 	}
 
-	data, err := json.MarshalIndent(lf, "", "    ")
+	data, err := marshalJSONIndent(lf, "", "    ")
 	if err != nil {
 		return fmt.Errorf("lockfile: marshal: %w", err)
 	}
@@ -229,9 +230,30 @@ func rawPackageName(raw json.RawMessage) string {
 }
 
 func mustMarshalObject(v interface{}) json.RawMessage {
-	data, err := json.Marshal(v)
+	data, err := marshalJSON(v)
 	if err != nil {
 		return json.RawMessage(`{}`)
 	}
 	return data
+}
+
+func marshalJSON(v interface{}) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
+}
+
+func marshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent(prefix, indent)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
