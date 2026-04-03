@@ -17,6 +17,7 @@ import (
 
 // APIResponse is the top-level Packagist p2 response.
 type APIResponse struct {
+	Minified string                    `json:"minified"`
 	Packages map[string][]VersionEntry `json:"packages"`
 }
 
@@ -24,6 +25,7 @@ type APIResponse struct {
 // GitLab-style object-shaped package maps keyed by version.
 func (r *APIResponse) UnmarshalJSON(data []byte) error {
 	type rawAPIResponse struct {
+		Minified string        `json:"minified"`
 		Packages rawPackageMap `json:"packages"`
 	}
 
@@ -37,9 +39,10 @@ func (r *APIResponse) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	r.Minified = raw.Minified
 	r.Packages = make(map[string][]VersionEntry, len(raw.Packages))
 	for name := range raw.Packages {
-		versions, ok, err := decodeComposerPackages(raw.Packages, name)
+		versions, ok, err := decodeComposerPackages(raw.Packages, name, raw.Minified == "composer/2.0")
 		if err != nil {
 			return err
 		}
@@ -174,7 +177,8 @@ type cacheEntry struct {
 }
 
 type composerRootResponse struct {
-	Packages rawPackageMap          `json:"packages"`
+	Minified string                  `json:"minified"`
+	Packages rawPackageMap           `json:"packages"`
 	Includes map[string]includeEntry `json:"includes"`
 }
 
@@ -201,17 +205,18 @@ func (m *rawPackageMap) UnmarshalJSON(data []byte) error {
 
 // Client fetches package metadata from a Packagist-compatible API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	auth       *composerauth.Config
-	metaCache  MetadataCache // nil = no persistent cache
-	mu         sync.RWMutex
-	cache      map[string]cacheEntry
-	authErr    bool
-	rootLoaded bool
-	rootErr    error
-	root       rawPackageMap
-	includes   []string
+	baseURL      string
+	httpClient   *http.Client
+	auth         *composerauth.Config
+	metaCache    MetadataCache // nil = no persistent cache
+	mu           sync.RWMutex
+	cache        map[string]cacheEntry
+	authErr      bool
+	rootLoaded   bool
+	rootErr      error
+	root         rawPackageMap
+	rootMinified bool
+	includes     []string
 }
 
 // Fetcher is the metadata interface used by the resolver.
@@ -372,7 +377,7 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 }
 
 func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([]VersionEntry, error) {
-	rootPackages, includeURLs, err := c.loadRootMetadata(ctx)
+	rootPackages, includeURLs, rootMinified, err := c.loadRootMetadata(ctx)
 	if err != nil {
 		if errors.Is(err, ErrPackageNotFound) {
 			c.mu.Lock()
@@ -382,7 +387,7 @@ func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([
 		return nil, err
 	}
 
-	if versions, ok, err := decodeComposerPackages(rootPackages, name); err != nil {
+	if versions, ok, err := decodeComposerPackages(rootPackages, name, rootMinified); err != nil {
 		return nil, err
 	} else if ok {
 		return versions, nil
@@ -397,7 +402,7 @@ func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([
 		if err := json.Unmarshal(data, &includeResp); err != nil {
 			return nil, fmt.Errorf("packagist: unmarshal include for %s: %w", name, err)
 		}
-		if versions, ok, err := decodeComposerPackages(includeResp.Packages, name); err != nil {
+		if versions, ok, err := decodeComposerPackages(includeResp.Packages, name, includeResp.Minified == "composer/2.0"); err != nil {
 			return nil, err
 		} else if ok {
 			return versions, nil
@@ -410,14 +415,14 @@ func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([
 	return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 }
 
-func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string, error) {
+func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string, bool, error) {
 	c.mu.RLock()
 	if c.rootLoaded {
 		packages := cloneRawMessageMap(c.root)
 		includeURLs := append([]string(nil), c.includes...)
 		rootErr := c.rootErr
 		c.mu.RUnlock()
-		return packages, includeURLs, rootErr
+		return packages, includeURLs, c.rootMinified, rootErr
 	}
 	c.mu.RUnlock()
 
@@ -427,12 +432,12 @@ func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string,
 		c.rootLoaded = true
 		c.rootErr = err
 		c.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	var root composerRootResponse
 	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, nil, fmt.Errorf("packagist: unmarshal packages.json: %w", err)
+		return nil, nil, false, fmt.Errorf("packagist: unmarshal packages.json: %w", err)
 	}
 
 	includeURLs := make([]string, 0, len(root.Includes))
@@ -444,9 +449,10 @@ func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string,
 	c.rootLoaded = true
 	c.rootErr = nil
 	c.root = cloneRawMessageMap(root.Packages)
+	c.rootMinified = root.Minified == "composer/2.0"
 	c.includes = includeURLs
 	c.mu.Unlock()
-	return root.Packages, append([]string(nil), includeURLs...), nil
+	return root.Packages, append([]string(nil), includeURLs...), root.Minified == "composer/2.0", nil
 }
 
 func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {
@@ -482,13 +488,21 @@ func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {
 	return body, nil
 }
 
-func decodeComposerPackages(packages rawPackageMap, name string) ([]VersionEntry, bool, error) {
+func decodeComposerPackages(packages rawPackageMap, name string, minified bool) ([]VersionEntry, bool, error) {
 	if len(packages) == 0 {
 		return nil, false, nil
 	}
 	raw, ok := packages[name]
 	if !ok {
 		return nil, false, nil
+	}
+
+	if minified {
+		list, err := decodeMinifiedVersionList(raw, name)
+		if err == nil {
+			normalizeVersionEntries(name, list)
+			return list, true, nil
+		}
 	}
 
 	var list []VersionEntry
@@ -508,6 +522,43 @@ func decodeComposerPackages(packages rawPackageMap, name string) ([]VersionEntry
 	}
 	normalizeVersionEntries(name, versions)
 	return versions, true, nil
+}
+
+func decodeMinifiedVersionList(raw json.RawMessage, name string) ([]VersionEntry, error) {
+	var rawList []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawList); err != nil {
+		return nil, err
+	}
+
+	versions := make([]VersionEntry, 0, len(rawList))
+	var prev map[string]json.RawMessage
+	for _, current := range rawList {
+		merged := make(map[string]json.RawMessage, len(prev)+len(current))
+		for key, value := range prev {
+			merged[key] = append(json.RawMessage(nil), value...)
+		}
+		for key, value := range current {
+			if string(value) == `"__unset"` {
+				delete(merged, key)
+				continue
+			}
+			merged[key] = value
+		}
+
+		data, err := json.Marshal(merged)
+		if err != nil {
+			return nil, fmt.Errorf("packagist: marshal minified %s entry: %w", name, err)
+		}
+
+		var entry VersionEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			return nil, fmt.Errorf("packagist: unmarshal minified %s entry: %w", name, err)
+		}
+		versions = append(versions, entry)
+		prev = merged
+	}
+
+	return versions, nil
 }
 
 func normalizeVersionEntries(name string, versions []VersionEntry) {
