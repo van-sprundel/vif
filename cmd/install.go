@@ -194,7 +194,23 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 		fmt.Fprintln(w, "Skipping autoload generation (--no-autoloader)")
 	} else {
 		fmt.Fprint(w, "Generating autoload files...")
-		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader, platformCheckMode); err != nil {
+
+		var ivCfg *autoload.InstalledVersionsConfig
+		devNames := make(map[string]bool, len(packagesDev))
+		for _, p := range packagesDev {
+			devNames[p.Name] = true
+		}
+		ivCfg = &autoload.InstalledVersionsConfig{
+			DevPackageNames: devNames,
+			DevMode:         !noDev,
+		}
+		if cj != nil {
+			ivCfg.RootName = cj.Name
+			ivCfg.RootVersion = cj.Version
+			ivCfg.RootType = cj.Type
+		}
+
+		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader, platformCheckMode, ivCfg); err != nil {
 			return fmt.Errorf("autoload: %w", err)
 		}
 		fmt.Fprintln(w, " done")

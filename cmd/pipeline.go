@@ -162,7 +162,20 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 		} else if cj.Config.PlatformCheck.IsPHPOnly() {
 			platformCheckMode = autoload.PlatformCheckPHPOnly
 		}
-		if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault(), platformCheckMode); err != nil {
+
+		devNames := make(map[string]bool, len(devPkgs))
+		for _, p := range devPkgs {
+			devNames[p.Name] = true
+		}
+		ivCfg := &autoload.InstalledVersionsConfig{
+			RootName:        cj.Name,
+			RootVersion:     cj.Version,
+			RootType:        cj.Type,
+			DevMode:         true,
+			DevPackageNames: devNames,
+		}
+
+		if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault(), platformCheckMode, ivCfg); err != nil {
 			return fmt.Errorf("autoload: %w", err)
 		}
 		fmt.Fprintln(w, " done")

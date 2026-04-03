@@ -28,7 +28,7 @@ type RootAutoload struct {
 // The hash is used as the suffix for class names (typically the content-hash from composer.lock).
 // If optimized is true, PSR-4/PSR-0 classes are scanned into the classmap (like composer dump-autoload -o).
 // If root is non-nil, root package autoload entries are included with $baseDir paths.
-func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool, root *RootAutoload, prependAutoloader bool, platformCheck PlatformCheckConfig) error {
+func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool, root *RootAutoload, prependAutoloader bool, platformCheck PlatformCheckConfig, ivCfg *InstalledVersionsConfig) error {
 	composerDir := filepath.Join(vendorDir, "composer")
 	if err := os.MkdirAll(composerDir, 0o755); err != nil {
 		return fmt.Errorf("autoload: mkdir: %w", err)
@@ -190,6 +190,11 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 
 	if hasPlatformCheck {
 		writers["platform_check.php"] = platformCheckPHP
+	}
+
+	if ivCfg != nil {
+		writers["InstalledVersions.php"] = installedVersionsPHP
+		writers["installed.php"] = generateInstalledPHP(packages, ivCfg)
 	}
 
 	if len(includePaths) > 0 {

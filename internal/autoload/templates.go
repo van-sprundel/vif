@@ -5,6 +5,9 @@ import _ "embed"
 //go:embed embed/ClassLoader.php
 var classLoaderPHP string
 
+//go:embed embed/InstalledVersions.php
+var installedVersionsPHP string
+
 // composerLicense is the Composer MIT license, written to vendor/composer/LICENSE.
 const composerLicense = `Copyright (c) Nils Adermann, Jordi Boggiano
 
