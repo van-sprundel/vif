@@ -18,6 +18,9 @@ type ComposerJSON struct {
 	Type             string            `json:"type"`
 	Require          map[string]string `json:"require"`
 	RequireDev       map[string]string `json:"require-dev"`
+	Conflict         map[string]string `json:"conflict"`
+	Replace          map[string]string `json:"replace"`
+	Provide          map[string]string `json:"provide"`
 	Repositories     []Repository      `json:"repositories"`
 	Autoload         pkg.Autoload      `json:"autoload"`
 	AutoloadDev      pkg.Autoload      `json:"autoload-dev"`
