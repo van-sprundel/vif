@@ -12,8 +12,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: go vet ./...
@@ -34,8 +34,8 @@ jobs:
           - goos: darwin
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Build
@@ -46,7 +46,7 @@ jobs:
         run: |
           BINARY=vif-${{ matrix.goos }}-${{ matrix.goarch }}
           go build -ldflags="-s -w -X cmd.Version=${{ github.ref_name }}" -o ./dist/${BINARY} .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vif-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/vif-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -55,7 +55,8 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

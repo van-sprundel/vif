@@ -11,6 +11,6 @@ pre-commit:
       glob: "*.go"
       run: |
         mkdir -p tmp/go-tmp tmp/go-build
-        packages="$(printf '%s\n' {staged_files} | tr ' ' '\n' | grep '\.go$' | xargs -r -n1 dirname | sort -u | xargs -r go list | sort -u)"
+        packages="$(printf '%s\n' {staged_files} | tr ' ' '\n' | grep '\.go$' | xargs -r -n1 dirname | sort -u | sed 's|^|./|' | xargs -r go list | sort -u)"
         test -n "$packages" || exit 0
         GOTMPDIR="$PWD/tmp/go-tmp" GOCACHE="$PWD/tmp/go-build" go test $packages
