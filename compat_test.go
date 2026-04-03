@@ -37,7 +37,6 @@ const compatFixturesDir = "testdata/fixtures/compat"
 var compatSkipFiles = map[string]bool{
 	"vendor/composer/installed.php":         true,
 	"vendor/composer/InstalledVersions.php": true,
-	"vendor/composer/platform_check.php":    true,
 }
 
 // compatAutoloaderFiles are the autoloader files whose content we compare.
@@ -277,7 +276,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil, prependAutoloader); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil, prependAutoloader, autoload.PlatformCheckFull); err != nil {
 		return "", fmt.Errorf("autoload.Generate: %w", err)
 	}
 

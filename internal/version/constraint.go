@@ -20,12 +20,12 @@ type constraintGroup struct {
 type boundOp int
 
 const (
-	opEq boundOp = iota
-	opNeq
-	opGt
-	opGte
-	opLt
-	opLte
+	OpEq boundOp = iota
+	OpNeq
+	OpGt
+	OpGte
+	OpLt
+	OpLte
 )
 
 type bound struct {
@@ -109,7 +109,7 @@ func parseSingleConstraint(s string) ([]bound, error) {
 	// Wildcard: *
 	if s == "*" {
 		// Match everything — use a bound that's always true.
-		return []bound{{op: opGte, version: Version{Stability: Dev}}}, nil
+		return []bound{{op: OpGte, version: Version{Stability: Dev}}}, nil
 	}
 
 	// Caret: ^x.y.z
@@ -133,35 +133,35 @@ func parseSingleConstraint(s string) ([]bound, error) {
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
-		return []bound{{op: opGte, version: v}}, nil
+		return []bound{{op: OpGte, version: v}}, nil
 	}
 	if strings.HasPrefix(s, "<=") {
 		v, err := Parse(s[2:])
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
-		return []bound{{op: opLte, version: v}}, nil
+		return []bound{{op: OpLte, version: v}}, nil
 	}
 	if strings.HasPrefix(s, "!=") {
 		v, err := Parse(s[2:])
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
-		return []bound{{op: opNeq, version: v}}, nil
+		return []bound{{op: OpNeq, version: v}}, nil
 	}
 	if strings.HasPrefix(s, ">") {
 		v, err := Parse(s[1:])
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
-		return []bound{{op: opGt, version: v}}, nil
+		return []bound{{op: OpGt, version: v}}, nil
 	}
 	if strings.HasPrefix(s, "<") {
 		v, err := Parse(s[1:])
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
-		return []bound{{op: opLt, version: v}}, nil
+		return []bound{{op: OpLt, version: v}}, nil
 	}
 
 	// Exact match (including dev-* branches).
@@ -169,7 +169,7 @@ func parseSingleConstraint(s string) ([]bound, error) {
 	if err != nil {
 		return nil, fmt.Errorf("constraint: %w", err)
 	}
-	return []bound{{op: opEq, version: v}}, nil
+	return []bound{{op: OpEq, version: v}}, nil
 }
 
 // parseCaret implements ^x.y.z:
@@ -197,8 +197,8 @@ func parseCaret(s string) ([]bound, error) {
 	lower.StabilityNum = v.StabilityNum
 
 	return []bound{
-		{op: opGte, version: lower},
-		{op: opLt, version: upper},
+		{op: OpGte, version: lower},
+		{op: OpLt, version: upper},
 	}, nil
 }
 
@@ -224,8 +224,8 @@ func parseTilde(s string) ([]bound, error) {
 	}
 
 	return []bound{
-		{op: opGte, version: v},
-		{op: opLt, version: upper},
+		{op: OpGte, version: v},
+		{op: OpLt, version: upper},
 	}, nil
 }
 
@@ -265,8 +265,8 @@ func parseWildcard(s string) ([]bound, error) {
 	}
 
 	return []bound{
-		{op: opGte, version: lower},
-		{op: opLt, version: upper},
+		{op: OpGte, version: lower},
+		{op: OpLt, version: upper},
 	}, nil
 }
 
@@ -290,6 +290,36 @@ func (c Constraint) Matches(v Version) bool {
 	return false
 }
 
+// LowerBound returns the highest >= or > lower bound across all OR groups.
+// Returns (Version, ">="|">", true) if found, or a zero value and false.
+func (c Constraint) LowerBound() (Version, string, bool) {
+	var best *bound
+	for _, g := range c.groups {
+		for i := range g.bounds {
+			b := &g.bounds[i]
+			if b.op != OpGte && b.op != OpGt {
+				continue
+			}
+			if best == nil {
+				best = b
+				continue
+			}
+			cmp := Compare(b.version, best.version)
+			if cmp > 0 || (cmp == 0 && b.op == OpGte && best.op == OpGt) {
+				best = b
+			}
+		}
+	}
+	if best == nil {
+		return Version{}, "", false
+	}
+	op := ">="
+	if best.op == OpGt {
+		op = ">"
+	}
+	return best.version, op, true
+}
+
 func (g constraintGroup) matches(v Version) bool {
 	for _, b := range g.bounds {
 		if !b.matches(v) {
@@ -302,21 +332,21 @@ func (g constraintGroup) matches(v Version) bool {
 func (b bound) matches(v Version) bool {
 	cmp := Compare(v, b.version)
 	switch b.op {
-	case opEq:
+	case OpEq:
 		// For dev branches, compare branch names.
 		if b.version.Dev && v.Dev {
 			return v.DevBranch == b.version.DevBranch
 		}
 		return cmp == 0
-	case opNeq:
+	case OpNeq:
 		return cmp != 0
-	case opGt:
+	case OpGt:
 		return cmp > 0
-	case opGte:
+	case OpGte:
 		return cmp >= 0
-	case opLt:
+	case OpLt:
 		return cmp < 0
-	case opLte:
+	case OpLte:
 		return cmp <= 0
 	}
 	return false
@@ -349,17 +379,17 @@ func (g constraintGroup) String() string {
 func (b bound) String() string {
 	var prefix string
 	switch b.op {
-	case opEq:
+	case OpEq:
 		return b.version.String()
-	case opNeq:
+	case OpNeq:
 		prefix = "!="
-	case opGt:
+	case OpGt:
 		prefix = ">"
-	case opGte:
+	case OpGte:
 		prefix = ">="
-	case opLt:
+	case OpLt:
 		prefix = "<"
-	case opLte:
+	case OpLte:
 		prefix = "<="
 	}
 	return prefix + b.version.String()

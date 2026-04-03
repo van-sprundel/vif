@@ -56,12 +56,18 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 	var rootMeta *installer.RootPackage
 	optimized := false
 	prependAutoloader := true
+	platformCheckMode := autoload.PlatformCheckFull
 	var root *autoload.RootAutoload
 	var cj *composer.ComposerJSON
 	if parsed, err := composer.Parse("composer.json"); err == nil {
 		cj = parsed
 		optimized = cj.Config.OptimizeAutoloader
 		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
+		if !cj.Config.PlatformCheck.IsTrue() {
+			platformCheckMode = autoload.PlatformCheckDisabled
+		} else if cj.Config.PlatformCheck.IsPHPOnly() {
+			platformCheckMode = autoload.PlatformCheckPHPOnly
+		}
 		rootMeta = &installer.RootPackage{
 			Name:    cj.Name,
 			Version: cj.Version,
@@ -188,7 +194,7 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 		fmt.Fprintln(w, "Skipping autoload generation (--no-autoloader)")
 	} else {
 		fmt.Fprint(w, "Generating autoload files...")
-		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader); err != nil {
+		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, root, prependAutoloader, platformCheckMode); err != nil {
 			return fmt.Errorf("autoload: %w", err)
 		}
 		fmt.Fprintln(w, " done")
