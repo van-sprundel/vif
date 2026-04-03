@@ -16,6 +16,7 @@ import (
 	"github.com/van-sprundel/vif/internal/downloader"
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/pkg"
 	"github.com/van-sprundel/vif/internal/ui"
 )
 
@@ -80,16 +81,17 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 	}
 
 	allPackages := append(packages, packagesDev...)
+	projectDir, err := filepath.Abs(".")
+	if err != nil {
+		return fmt.Errorf("project dir: %w", err)
+	}
 	if cj != nil {
-		projectDir, err := filepath.Abs(".")
-		if err != nil {
-			return fmt.Errorf("project dir: %w", err)
-		}
 		allPackages, err = applyLocalPathPackages(allPackages, cj.Repositories, projectDir)
 		if err != nil {
 			return fmt.Errorf("path repositories: %w", err)
 		}
 	}
+	allPackages = promoteSourceToDist(allPackages, projectDir)
 
 	prodCount := len(packages)
 	packages = allPackages[:prodCount]
@@ -134,8 +136,7 @@ func runInstall(ctx context.Context, verbose, noDev bool) error {
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
 			skipped++
-			pathInstallable := r.Package.Dist.Type == "path" && strings.TrimSpace(r.Package.Dist.URL) != ""
-			if r.Package.Type != "metapackage" && !pathInstallable {
+			if !pkg.IsInstallable(r.Package) {
 				skippedUnsupported = append(skippedUnsupported, fmt.Sprintf("%s (type=%s dist=%s url=%q)", r.Package.Name, r.Package.Type, r.Package.Dist.Type, r.Package.Dist.URL))
 			}
 			progress.Increment(r.Package.Name)

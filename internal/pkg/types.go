@@ -14,6 +14,7 @@ type Package struct {
 	Bin         []string `json:"bin"`
 	IncludePath []string `json:"include-path"`
 	Dist        Dist     `json:"dist"`
+	Source      Dist     `json:"source"`
 	Autoload    Autoload `json:"autoload"`
 	AutoloadDev Autoload `json:"autoload-dev"`
 }
@@ -95,8 +96,7 @@ func normalizeStringMap(raw map[string]json.RawMessage) (map[string][]string, er
 	return out, nil
 }
 
-// RequiresDownload reports whether a package should be fetched into the cache.
-// Packages without a dist URL are source-only and are skipped for now.
+// RequiresDownload reports whether a package should be fetched via HTTP dist.
 func RequiresDownload(p Package) bool {
 	if p.Type == "metapackage" {
 		return false
@@ -105,4 +105,21 @@ func RequiresDownload(p Package) bool {
 		return strings.TrimSpace(p.Dist.URL) != ""
 	}
 	return strings.TrimSpace(p.Dist.URL) != ""
+}
+
+// RequiresGitClone reports whether a package has no dist but has a git source
+// that can be cloned.
+func RequiresGitClone(p Package) bool {
+	if p.Type == "metapackage" {
+		return false
+	}
+	if strings.TrimSpace(p.Dist.URL) != "" {
+		return false
+	}
+	return p.Source.Type == "git" && strings.TrimSpace(p.Source.URL) != ""
+}
+
+// IsInstallable reports whether a package can be installed by any supported method.
+func IsInstallable(p Package) bool {
+	return p.Type == "metapackage" || RequiresDownload(p) || RequiresGitClone(p)
 }

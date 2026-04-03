@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -89,7 +90,11 @@ func (d *Downloader) Download(ctx context.Context, packages []pkg.Package) ([]Re
 }
 
 func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
-	// Skip packages that cannot be fetched into the cache yet.
+	if pkg.RequiresGitClone(p) {
+		return d.gitClone(ctx, p)
+	}
+
+	// Skip packages that cannot be fetched into the cache.
 	if !pkg.RequiresDownload(p) {
 		return Result{Package: p, Skipped: true}
 	}
@@ -127,6 +132,63 @@ func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
 
 	// Record in SQLite.
 	if err := d.cache.Insert(p.Name, p.Version, p.Dist.URL, p.Dist.Reference, key); err != nil {
+		return Result{Package: p, Err: fmt.Errorf("cache insert: %w", err)}
+	}
+
+	return Result{Package: p}
+}
+
+func (d *Downloader) gitClone(ctx context.Context, p pkg.Package) Result {
+	key := cache.CacheKey(p.Source.URL + "@" + p.Source.Reference)
+
+	_, found, err := d.cache.Lookup(p.Name, p.Version)
+	if err != nil {
+		return Result{Package: p, Err: fmt.Errorf("cache lookup: %w", err)}
+	}
+	if found && d.cache.HasExtracted(key) {
+		return Result{Package: p, FromCache: true}
+	}
+
+	destDir := d.cache.ExtractedDir(key)
+	if err := os.RemoveAll(destDir); err != nil {
+		return Result{Package: p, Err: fmt.Errorf("clean clone dir: %w", err)}
+	}
+
+	args := []string{"clone", "--depth", "1"}
+	if ref := strings.TrimSpace(p.Source.Reference); ref != "" {
+		// Try cloning the ref as a branch/tag first. If it's a commit hash,
+		// we'll do a full clone + checkout below.
+		args = append(args, "--branch", ref)
+	}
+	args = append(args, p.Source.URL, destDir)
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Shallow clone with --branch fails for bare commit SHAs.
+		// Fall back to a full clone + checkout.
+		if ref := strings.TrimSpace(p.Source.Reference); ref != "" {
+			_ = os.RemoveAll(destDir)
+			fallbackArgs := []string{"clone", p.Source.URL, destDir}
+			cmd2 := exec.CommandContext(ctx, "git", fallbackArgs...)
+			out2, err2 := cmd2.CombinedOutput()
+			if err2 != nil {
+				return Result{Package: p, Err: fmt.Errorf("git clone %s: %s", p.Name, strings.TrimSpace(string(out2)))}
+			}
+			cmd3 := exec.CommandContext(ctx, "git", "-C", destDir, "checkout", ref)
+			out3, err3 := cmd3.CombinedOutput()
+			if err3 != nil {
+				return Result{Package: p, Err: fmt.Errorf("git checkout %s@%s: %s", p.Name, ref, strings.TrimSpace(string(out3)))}
+			}
+		} else {
+			return Result{Package: p, Err: fmt.Errorf("git clone %s: %s", p.Name, strings.TrimSpace(string(out)))}
+		}
+	}
+
+	// Remove .git directory — we only need the source files.
+	_ = os.RemoveAll(filepath.Join(destDir, ".git"))
+
+	if err := d.cache.Insert(p.Name, p.Version, p.Source.URL, p.Source.Reference, key); err != nil {
 		return Result{Package: p, Err: fmt.Errorf("cache insert: %w", err)}
 	}
 

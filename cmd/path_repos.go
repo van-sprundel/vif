@@ -45,6 +45,29 @@ func applyLocalPathPackages(packages []pkg.Package, repositories []composer.Repo
 	return out, nil
 }
 
+// promoteSourceToDist copies Source to Dist for packages that still have an
+// empty Dist but carry a path-type Source (common for Composer path repos in
+// the lockfile). Relative source URLs are resolved against projectDir.
+func promoteSourceToDist(packages []pkg.Package, projectDir string) []pkg.Package {
+	for i := range packages {
+		if strings.TrimSpace(packages[i].Dist.URL) != "" {
+			continue
+		}
+		if packages[i].Source.Type != "path" || strings.TrimSpace(packages[i].Source.URL) == "" {
+			continue
+		}
+		srcURL := packages[i].Source.URL
+		if !filepath.IsAbs(srcURL) {
+			srcURL = filepath.Join(projectDir, srcURL)
+		}
+		packages[i].Dist.Type = "path"
+		packages[i].Dist.URL = srcURL
+		packages[i].Dist.Reference = packages[i].Source.Reference
+		packages[i].Dist.Shasum = ""
+	}
+	return packages
+}
+
 func discoverPathRepositoryPackages(repositories []composer.Repository, projectDir string) (map[string]string, error) {
 	packages := make(map[string]string)
 
