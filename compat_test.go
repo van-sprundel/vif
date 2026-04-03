@@ -897,7 +897,8 @@ func isKnownCompatUpdateSkip(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "no versions of lox/xhprof found matching stability stable") ||
 		strings.Contains(msg, "no versions of amirami/localizator found matching stability stable") ||
-		strings.Contains(msg, "private/custom repositories are not supported yet")
+		strings.Contains(msg, "private/custom repositories are not supported yet") ||
+		strings.Contains(msg, "path repository does not exist")
 }
 
 func TestCompatUpdateLockfile(t *testing.T) {
