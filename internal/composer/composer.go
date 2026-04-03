@@ -22,7 +22,7 @@ type ComposerJSON struct {
 	Conflict         map[string]string `json:"conflict"`
 	Replace          map[string]string `json:"replace"`
 	Provide          map[string]string `json:"provide"`
-	Repositories     []Repository      `json:"repositories"`
+	Repositories     []Repository      `json:"-"`
 	Autoload         pkg.Autoload      `json:"autoload"`
 	AutoloadDev      pkg.Autoload      `json:"autoload-dev"`
 	MinimumStability string            `json:"minimum-stability"`
@@ -32,6 +32,9 @@ type ComposerJSON struct {
 
 	// raw holds the original decoded JSON for content-hash computation.
 	raw map[string]json.RawMessage
+
+	// reposRaw holds the raw repositories JSON for deferred parsing.
+	reposRaw json.RawMessage
 }
 
 // composerConfig holds the config section of composer.json.
@@ -56,6 +59,42 @@ func (c composerConfig) PrependAutoloaderOrDefault() bool {
 	return *c.PrependAutoloader
 }
 
+// UnmarshalJSON implements custom unmarshaling to capture the raw repositories JSON.
+func (cj *ComposerJSON) UnmarshalJSON(data []byte) error {
+	type alias ComposerJSON
+	var a struct {
+		alias
+		ReposRaw json.RawMessage `json:"repositories"`
+	}
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*cj = ComposerJSON(a.alias)
+	cj.reposRaw = a.ReposRaw
+	return nil
+}
+
+func parseRepositories(raw json.RawMessage) ([]Repository, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	// Try array form first: [{"type":..., "url":...}, ...]
+	var arr []Repository
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, nil
+	}
+	// Object form: {"repo-name": {"type":..., "url":...}, ...}
+	var obj map[string]Repository
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("repositories: expected array or object: %w", err)
+	}
+	repos := make([]Repository, 0, len(obj))
+	for _, repo := range obj {
+		repos = append(repos, repo)
+	}
+	return repos, nil
+}
+
 // Repository is a Composer repository entry supported by vif.
 type Repository struct {
 	Type string `json:"type"`
@@ -76,6 +115,12 @@ func Parse(path string) (*ComposerJSON, error) {
 
 	// Decode raw for content-hash.
 	if err := json.Unmarshal(data, &cj.raw); err != nil {
+		return nil, fmt.Errorf("composer: %w", err)
+	}
+
+	// Parse repositories from the raw field (handles both array and object).
+	cj.Repositories, err = parseRepositories(cj.reposRaw)
+	if err != nil {
 		return nil, fmt.Errorf("composer: %w", err)
 	}
 
