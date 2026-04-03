@@ -95,6 +95,10 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 			failed++
 			progress.Error(fmt.Sprintf("  ERROR %s: %v", r.Package.Name, r.Err))
 		} else if r.Skipped {
+			if r.Package.Type == "metapackage" {
+				progress.Increment(r.Package.Name)
+				continue
+			}
 			skipped++
 			if !pkg.IsInstallable(r.Package) {
 				skippedUnsupported = append(skippedUnsupported, fmt.Sprintf("%s (type=%s dist=%s url=%q)", r.Package.Name, r.Package.Type, r.Package.Dist.Type, r.Package.Dist.URL))
@@ -122,7 +126,11 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 		)
 	}
 
-	fmt.Fprintf(w, "  %d downloaded, %d from cache, %d skipped (non-downloadable)\n", downloaded, cached, skipped)
+	if skipped > 0 {
+		fmt.Fprintf(w, "  %d downloaded, %d from cache, %d skipped (non-downloadable)\n", downloaded, cached, skipped)
+	} else {
+		fmt.Fprintf(w, "  %d downloaded, %d from cache\n", downloaded, cached)
+	}
 
 	// Install to vendor/.
 	vendorDir := filepath.Join(".", "vendor")
