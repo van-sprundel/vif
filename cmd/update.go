@@ -47,7 +47,13 @@ func runUpdate(ctx context.Context, verbose bool, noAutoloader bool) error {
 	}
 	fmt.Fprintf(w, "Resolving dependencies for %s...\n", cj.Name)
 
-	// 2. Open the persistent cache (shared with install phase).
+	// 2. Read existing lockfile for VCS-only packages (if present).
+	var lockedEntries map[string]packagist.VersionEntry
+	if existingLock, err := lockfile.Parse("composer.lock"); err == nil {
+		lockedEntries = existingLock.LockedEntries()
+	}
+
+	// 3. Open the persistent cache (shared with install phase).
 	cacheDir, err := cacheDirectory()
 	if err != nil {
 		return fmt.Errorf("cache directory: %w", err)
@@ -58,7 +64,7 @@ func runUpdate(ctx context.Context, verbose bool, noAutoloader bool) error {
 	}
 	defer c.Close()
 
-	// 3. Resolve dependencies.
+	// 4. Resolve dependencies.
 	client, err := metadataClient(cj, c)
 	if err != nil {
 		return err
@@ -71,6 +77,7 @@ func runUpdate(ctx context.Context, verbose bool, noAutoloader bool) error {
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
 		RestrictedPackages: restrictedPackages,
 		Restriction:        restriction,
+		LockedEntries:      lockedEntries,
 	}, func(name string) {
 		progress.Increment(name)
 	})
