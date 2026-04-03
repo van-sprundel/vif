@@ -336,7 +336,7 @@ func TestGenerateAutoloadRuntimeWhenSymfonyRuntimePresent(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "runtimehash", false, nil); err != nil {
+	if err := Generate(vendorDir, packages, "runtimehash", false, nil, true); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -364,7 +364,7 @@ func TestGenerateNoAutoloadRuntimeWithoutSymfonyRuntime(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "noruntimehash", false, nil); err != nil {
+	if err := Generate(vendorDir, packages, "noruntimehash", false, nil, true); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
