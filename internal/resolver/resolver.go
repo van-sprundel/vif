@@ -27,6 +27,9 @@ type Options struct {
 	// resolver prefers the locked version over newer candidates when it still
 	// satisfies all constraints.
 	Locked map[string]string
+	// LockedEntries holds full version entries for locked packages. Used to
+	// preserve VCS-only packages that have no Packagist releases.
+	LockedEntries map[string]packagist.VersionEntry
 	// RestrictedPackages constrains a specific package set to Restriction.
 	RestrictedPackages map[string]struct{}
 	Restriction        string
@@ -63,12 +66,17 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
 	populateVersionCache(versionCache, prefetched, cj.PreferStable)
 
+	// Inject locked entries for packages with no Packagist versions (VCS-only packages).
+	// This allows the resolver to keep them from the lockfile instead of failing.
+	injectLockedEntries(versionCache, prefetched, opts.LockedEntries, cj.PreferStable)
+
 	r := &resolver{
 		ctx:              ctx,
 		client:           client,
 		minimumStability: minimumStability,
 		preferStable:     cj.PreferStable,
 		locked:           opts.Locked,
+		lockedEntries:    opts.LockedEntries,
 		rootProvide:      cj.Provide,
 		rootReplace:      cj.Replace,
 		rootConflict:     cj.Conflict,
@@ -220,6 +228,7 @@ type resolver struct {
 	minimumStability   version.Stability
 	preferStable       bool
 	locked             map[string]string
+	lockedEntries      map[string]packagist.VersionEntry
 	rootProvide        map[string]string
 	rootReplace        map[string]string
 	rootConflict       map[string]string
@@ -574,6 +583,15 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 			continue
 		}
 		candidates = append(candidates, candidate{entry: entry, version: v})
+	}
+
+	// If Packagist returned no versions, try to use locked entry (VCS-only packages).
+	if len(candidates) == 0 {
+		if entry, ok := r.lockedEntries[name]; ok {
+			if v, err := version.Parse(entry.Version); err == nil {
+				candidates = []candidate{{entry: entry, version: v}}
+			}
+		}
 	}
 
 	// Sort descending by version (highest first).

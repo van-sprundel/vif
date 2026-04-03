@@ -152,6 +152,43 @@ func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[s
 	}
 }
 
+// injectLockedEntries adds locked package versions to the cache for packages
+// that have no Packagist releases (VCS-only packages). This allows the resolver
+// to preserve them from the lockfile instead of failing.
+func injectLockedEntries(cache map[string]candidateCacheEntry, prefetched map[string]prefetchResult, lockedEntries map[string]packagist.VersionEntry, preferStable bool) {
+	if len(lockedEntries) == 0 {
+		return
+	}
+
+	for name, entry := range lockedEntries {
+		// Check if Packagist returned an empty version list for this package.
+		result, fetched := prefetched[name]
+		if !fetched {
+			// Package wasn't even fetched (not in dependency tree) - skip.
+			continue
+		}
+		if result.err != nil && !errors.Is(result.err, packagist.ErrPackageNotFound) {
+			// Fetch error other than "not found" - don't override.
+			continue
+		}
+		if len(result.versions) > 0 {
+			// Package has Packagist versions - don't need to inject locked entry.
+			continue
+		}
+
+		// Parse the locked version.
+		v, err := version.Parse(entry.Version)
+		if err != nil {
+			continue
+		}
+
+		// Inject the locked entry as the only candidate.
+		candidates := []candidate{{entry: entry, version: v}}
+		sortCandidates(candidates, preferStable)
+		cache[name] = candidateCacheEntry{candidates: candidates}
+	}
+}
+
 func sortCandidates(candidates []candidate, preferStable bool) {
 	sort.Slice(candidates, func(i, j int) bool {
 		if preferStable && candidates[i].version.Stability != candidates[j].version.Stability {

@@ -70,6 +70,49 @@ func Parse(path string) (*LockFile, error) {
 	return &lf, nil
 }
 
+// LockedEntries returns a map of package name to VersionEntry for all locked packages.
+// This is used by the resolver to preserve VCS-only packages that have no Packagist releases.
+func (lf *LockFile) LockedEntries() map[string]packagist.VersionEntry {
+	entries := make(map[string]packagist.VersionEntry, len(lf.Packages)+len(lf.PackagesDev))
+
+	for _, p := range lf.Packages {
+		entries[p.Name] = packageToVersionEntry(p)
+	}
+	for _, p := range lf.PackagesDev {
+		entries[p.Name] = packageToVersionEntry(p)
+	}
+
+	return entries
+}
+
+// packageToVersionEntry converts a lockfile Package to a packagist VersionEntry.
+func packageToVersionEntry(p pkg.Package) packagist.VersionEntry {
+	return packagist.VersionEntry{
+		Name:              p.Name,
+		Version:           p.Version,
+		VersionNormalized: p.VersionNormalized,
+		Type:              p.Type,
+		Bin:               p.Bin,
+		Require:           p.Require,
+		RequireDev:        p.RequireDev,
+		Provide:           p.Provide,
+		Replace:           p.Replace,
+		Conflict:          p.Conflict,
+		Dist: packagist.DistEntry{
+			Type:      p.Dist.Type,
+			URL:       p.Dist.URL,
+			Reference: p.Dist.Reference,
+			Shasum:    p.Dist.Shasum,
+		},
+		Source: packagist.DistEntry{
+			Type:      p.Source.Type,
+			URL:       p.Source.URL,
+			Reference: p.Source.Reference,
+		},
+		Time: p.Time,
+	}
+}
+
 // Generate creates a composer.lock file from resolved packages and writes it to path.
 func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.ComposerJSON) error {
 	existing, _ := loadExistingLockfile(path)

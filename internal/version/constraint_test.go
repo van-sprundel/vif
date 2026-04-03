@@ -174,3 +174,73 @@ func TestConstraintStabilityFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveStability(t *testing.T) {
+	tests := []struct {
+		constraint       string
+		minimumStability Stability
+		wantStability    Stability
+	}{
+		// Explicit @flag overrides minimum-stability.
+		{"^1.0@dev", Stable, Dev},
+		{"^1.0@alpha", Stable, Alpha},
+		{"^1.0@beta", RC, Beta},
+		{"^1.0@rc", Stable, RC},
+		{"^1.0@stable", Dev, Stable},
+
+		// Dev-branch constraints implicitly require dev stability.
+		{"dev-master", Stable, Dev},
+		{"dev-main", Stable, Dev},
+		{"dev-feature/foo", Stable, Dev},
+
+		// No override uses minimum-stability.
+		{"^1.0", Stable, Stable},
+		{"^1.0", Beta, Beta},
+		{">=1.0.0", Alpha, Alpha},
+		{"1.0.0", Dev, Dev},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.constraint, func(t *testing.T) {
+			c, err := ParseConstraint(tc.constraint)
+			if err != nil {
+				t.Fatalf("ParseConstraint(%q): %v", tc.constraint, err)
+			}
+			got := c.EffectiveStability(tc.minimumStability)
+			if got != tc.wantStability {
+				t.Errorf("EffectiveStability(%v) = %v, want %v", tc.minimumStability, got, tc.wantStability)
+			}
+		})
+	}
+}
+
+func TestStabilityOverride(t *testing.T) {
+	tests := []struct {
+		constraint   string
+		wantOverride int
+	}{
+		// No stability flag.
+		{"^1.0", NoStabilityOverride},
+		{">=1.0.0", NoStabilityOverride},
+		{"dev-master", NoStabilityOverride}, // dev-branch is implicit, not explicit
+
+		// Explicit stability flags.
+		{"^1.0@dev", int(Dev)},
+		{"^1.0@alpha", int(Alpha)},
+		{"^1.0@beta", int(Beta)},
+		{"^1.0@rc", int(RC)},
+		{"^1.0@stable", int(Stable)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.constraint, func(t *testing.T) {
+			c, err := ParseConstraint(tc.constraint)
+			if err != nil {
+				t.Fatalf("ParseConstraint(%q): %v", tc.constraint, err)
+			}
+			if c.StabilityOverride != tc.wantOverride {
+				t.Errorf("StabilityOverride = %v, want %v", c.StabilityOverride, tc.wantOverride)
+			}
+		})
+	}
+}
