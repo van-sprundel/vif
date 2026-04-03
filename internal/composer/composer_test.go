@@ -296,6 +296,75 @@ func TestParseAutoload(t *testing.T) {
 	}
 }
 
+func TestParseRepositoriesArray(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "test/repos",
+		"repositories": [
+			{"type": "composer", "url": "https://repo.example.com"},
+			{"type": "vcs", "url": "https://github.com/acme/foo"}
+		]
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cj.Repositories) != 2 {
+		t.Fatalf("len(Repositories) = %d, want 2", len(cj.Repositories))
+	}
+	if cj.Repositories[0].Type != "composer" {
+		t.Errorf("Repositories[0].Type = %q, want composer", cj.Repositories[0].Type)
+	}
+	if cj.Repositories[1].URL != "https://github.com/acme/foo" {
+		t.Errorf("Repositories[1].URL = %q", cj.Repositories[1].URL)
+	}
+}
+
+func TestParseRepositoriesObject(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "test/repos",
+		"repositories": {
+			"repo1": {"type": "composer", "url": "https://repo.example.com"},
+			"repo2": {"type": "vcs", "url": "https://github.com/acme/foo"}
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cj.Repositories) != 2 {
+		t.Fatalf("len(Repositories) = %d, want 2", len(cj.Repositories))
+	}
+	foundComposer, foundVcs := false, false
+	for _, r := range cj.Repositories {
+		if r.Type == "composer" {
+			foundComposer = true
+		}
+		if r.Type == "vcs" {
+			foundVcs = true
+		}
+	}
+	if !foundComposer || !foundVcs {
+		t.Errorf("Repositories = %v, want one composer and one vcs", cj.Repositories)
+	}
+}
+
+func TestParseRepositoriesEmpty(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{"name": "test/no-repos"}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cj.Repositories) != 0 {
+		t.Errorf("len(Repositories) = %d, want 0", len(cj.Repositories))
+	}
+}
+
 func writeJSON(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(content), 0o644); err != nil {
