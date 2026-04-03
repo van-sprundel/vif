@@ -40,6 +40,7 @@ type lockPkgEntry struct {
 	Name        string               `json:"name"`
 	Version     string               `json:"version"`
 	Dist        packagist.DistEntry  `json:"dist"`
+	Source      packagist.DistEntry  `json:"source,omitempty"`
 	Require     map[string]string    `json:"require,omitempty"`
 	RequireDev  map[string]string    `json:"require-dev,omitempty"`
 	Provide     map[string]string    `json:"provide,omitempty"`
@@ -86,6 +87,7 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 			Name:        rp.Name,
 			Version:     rp.Version,
 			Dist:        rp.Entry.Dist,
+			Source:      rp.Entry.Source,
 			Require:     rp.Entry.Require,
 			RequireDev:  rp.Entry.RequireDev,
 			Provide:     rp.Entry.Provide,

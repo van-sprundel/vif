@@ -35,6 +35,12 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 				Reference: rp.Entry.Dist.Reference,
 				Shasum:    rp.Entry.Dist.Shasum,
 			},
+			Source: pkg.Dist{
+				Type:      rp.Entry.Source.Type,
+				URL:       rp.Entry.Source.URL,
+				Reference: rp.Entry.Source.Reference,
+				Shasum:    rp.Entry.Source.Shasum,
+			},
 		}
 		if len(rp.Entry.Autoload) > 0 {
 			if err := json.Unmarshal(rp.Entry.Autoload, &p.Autoload); err != nil {

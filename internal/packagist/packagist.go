@@ -65,6 +65,7 @@ type VersionEntry struct {
 	Autoload          json.RawMessage `json:"autoload"`
 	AutoloadDev       json.RawMessage `json:"autoload-dev"`
 	Dist              DistEntry       `json:"dist"`
+	Source            DistEntry       `json:"source"`
 	Time              string          `json:"time"`
 }
 
