@@ -8,15 +8,22 @@ import (
 
 // Package represents a single entry from composer.lock packages or packages-dev.
 type Package struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Type        string   `json:"type"`
-	Bin         []string `json:"bin"`
-	IncludePath []string `json:"include-path"`
-	Dist        Dist     `json:"dist"`
-	Source      Dist     `json:"source"`
-	Autoload    Autoload `json:"autoload"`
-	AutoloadDev Autoload `json:"autoload-dev"`
+	Name              string            `json:"name"`
+	Version           string            `json:"version"`
+	VersionNormalized string            `json:"version_normalized"`
+	Type              string            `json:"type"`
+	Bin               []string          `json:"bin"`
+	IncludePath       []string          `json:"include-path"`
+	Dist              Dist              `json:"dist"`
+	Source            Dist              `json:"source"`
+	Require           map[string]string `json:"require"`
+	RequireDev        map[string]string `json:"require-dev"`
+	Provide           map[string]string `json:"provide"`
+	Replace           map[string]string `json:"replace"`
+	Conflict          map[string]string `json:"conflict"`
+	Autoload          Autoload          `json:"autoload"`
+	AutoloadDev       Autoload          `json:"autoload-dev"`
+	Time              string            `json:"time"`
 }
 
 // Dist holds the distribution metadata for downloading a package archive.
