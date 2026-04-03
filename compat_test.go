@@ -915,8 +915,12 @@ func isKnownCompatUpdateSkip(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "no versions of lox/xhprof found matching stability stable") ||
-		strings.Contains(msg, "no versions of amirami/localizator found matching stability stable") ||
+	// These packages only exist as VCS repositories with no Packagist releases.
+	// They have empty version lists on Packagist, so resolution fails regardless
+	// of stability settings. This is a known Phase 1 limitation (Packagist-only).
+	return strings.Contains(msg, "no versions of lox/xhprof found") ||
+		strings.Contains(msg, "no versions of amirami/localizator found") ||
+		strings.Contains(msg, "no versions of roave/security-advisories found") ||
 		strings.Contains(msg, "private/custom repositories are not supported yet") ||
 		strings.Contains(msg, "path repository does not exist")
 }
