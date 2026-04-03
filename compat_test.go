@@ -34,10 +34,7 @@ import (
 const compatFixturesDir = "testdata/fixtures/compat"
 
 // compatSkipFiles are vendor/composer/ files vif doesn't generate yet.
-var compatSkipFiles = map[string]bool{
-	"vendor/composer/installed.php":         true,
-	"vendor/composer/InstalledVersions.php": true,
-}
+var compatSkipFiles = map[string]bool{}
 
 // compatAutoloaderFiles are the autoloader files whose content we compare.
 var compatAutoloaderFiles = map[string]bool{
@@ -241,13 +238,22 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 	optimized := false
 	prependAutoloader := true
 	var root *installer.RootPackage
-	if cj, err := composer.Parse(filepath.Join(dir, "composer.json")); err == nil {
+	var rootAutoload *autoload.RootAutoload
+	var cj *composer.ComposerJSON
+	if parsed, err := composer.Parse(filepath.Join(dir, "composer.json")); err == nil {
+		cj = parsed
 		optimized = cj.Config.OptimizeAutoloader
 		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
 		root = &installer.RootPackage{
 			Name:    cj.Name,
 			Version: cj.Version,
 			Type:    cj.Type,
+		}
+		rootAutoload = &autoload.RootAutoload{
+			PSR4:     cj.Autoload.PSR4,
+			PSR0:     cj.Autoload.PSR0,
+			Classmap: cj.Autoload.Classmap,
+			Files:    cj.Autoload.Files,
 		}
 	}
 
@@ -276,7 +282,22 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, nil, prependAutoloader, autoload.PlatformCheckFull); err != nil {
+	// Build InstalledVersionsConfig
+	devNames := make(map[string]bool, len(lf.PackagesDev))
+	for _, p := range lf.PackagesDev {
+		devNames[p.Name] = true
+	}
+	ivCfg := &autoload.InstalledVersionsConfig{
+		DevPackageNames: devNames,
+		DevMode:         true, // compat tests run with dev packages
+	}
+	if cj != nil {
+		ivCfg.RootName = cj.Name
+		ivCfg.RootVersion = cj.Version
+		ivCfg.RootType = cj.Type
+	}
+
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, optimized, rootAutoload, prependAutoloader, autoload.PlatformCheckFull, ivCfg); err != nil {
 		return "", fmt.Errorf("autoload.Generate: %w", err)
 	}
 

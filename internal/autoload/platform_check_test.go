@@ -20,7 +20,7 @@ func TestPlatformCheckDisabled(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h1", false, nil, true, PlatformCheckDisabled); err != nil {
+	if err := Generate(vendorDir, packages, "h1", false, nil, true, PlatformCheckDisabled, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -44,7 +44,7 @@ func TestPlatformCheckPHPVersion(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h2", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h2", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestPlatformCheckExtensions(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h3", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h3", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestPlatformCheckPHPOnly(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h4", false, nil, true, PlatformCheckPHPOnly); err != nil {
+	if err := Generate(vendorDir, packages, "h4", false, nil, true, PlatformCheckPHPOnly, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestPlatformCheckNoPlatformReqs(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h5", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h5", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestPlatformCheck64Bit(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h6", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h6", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestPlatformCheckCLISpecialExtensions(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h7", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h7", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -251,7 +251,7 @@ func TestPlatformCheckHighestPHPBound(t *testing.T) {
 		},
 	}
 
-	if err := Generate(vendorDir, packages, "h8", false, nil, true, PlatformCheckFull); err != nil {
+	if err := Generate(vendorDir, packages, "h8", false, nil, true, PlatformCheckFull, nil); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
