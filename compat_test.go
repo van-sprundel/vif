@@ -250,10 +250,9 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 			Type:    cj.Type,
 		}
 		rootAutoload = &autoload.RootAutoload{
-			PSR4:     cj.Autoload.PSR4,
-			PSR0:     cj.Autoload.PSR0,
-			Classmap: cj.Autoload.Classmap,
-			Files:    cj.Autoload.Files,
+			Name:        cj.Name,
+			Autoload:    cj.Autoload,
+			AutoloadDev: cj.AutoloadDev,
 		}
 	}
 
