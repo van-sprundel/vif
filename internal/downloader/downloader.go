@@ -1,8 +1,11 @@
 package downloader
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -110,7 +113,7 @@ func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
 		return Result{Package: p, FromCache: true}
 	}
 
-	// Download the zip.
+	// Download the archive.
 	body, err := d.fetch(ctx, p.Dist.URL)
 	if err != nil {
 		return Result{Package: p, Err: fmt.Errorf("download %s: %w", p.Name, err)}
@@ -124,9 +127,9 @@ func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
 		}
 	}
 
-	// Extract zip into cache.
+	// Extract archive into cache.
 	extractedDir := d.cache.ExtractedDir(key)
-	if err := extractZip(body, extractedDir); err != nil {
+	if err := extractArchive(body, p.Dist.Type, extractedDir); err != nil {
 		return Result{Package: p, Err: fmt.Errorf("extract %s: %w", p.Name, err)}
 	}
 
@@ -245,6 +248,143 @@ func isPrivateArchiveHost(u *url.URL) bool {
 	default:
 		return false
 	}
+}
+
+type tarFile struct {
+	name    string
+	isDir   bool
+	mode    os.FileMode
+	content []byte
+}
+
+type tarCompression int
+
+const (
+	tarUncompressed tarCompression = iota
+	tarGzip
+	tarBzip2
+)
+
+func extractArchive(data []byte, distType string, dest string) error {
+	switch distType {
+	case "zip":
+		return extractZip(data, dest)
+	case "tar", "tgz":
+		return extractTar(data, dest, tarUncompressed)
+	case "tar.gz", "gzip":
+		return extractTar(data, dest, tarGzip)
+	case "tar.bz2", "bzip2":
+		return extractTar(data, dest, tarBzip2)
+	default:
+		return fmt.Errorf("unsupported archive type %q", distType)
+	}
+}
+
+func extractTar(data []byte, dest string, compression tarCompression) error {
+	var r io.Reader = bytes.NewReader(data)
+	switch compression {
+	case tarGzip:
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return fmt.Errorf("open gzip: %w", err)
+		}
+		defer gz.Close()
+		r = gz
+	case tarBzip2:
+		r = bzip2.NewReader(r)
+	}
+
+	tr := tar.NewReader(r)
+	var files []tarFile
+	var dirs []string
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar: %w", err)
+		}
+
+		if hdr.Typeflag != tar.TypeDir && hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		if hdr.Typeflag == tar.TypeDir {
+			dirs = append(dirs, hdr.Name)
+			files = append(files, tarFile{
+				name:  hdr.Name,
+				isDir: true,
+				mode:  os.FileMode(hdr.Mode),
+			})
+		} else {
+			content, err := io.ReadAll(tr)
+			if err != nil {
+				return fmt.Errorf("read %q from tar: %w", hdr.Name, err)
+			}
+			files = append(files, tarFile{
+				name:    hdr.Name,
+				mode:    os.FileMode(hdr.Mode),
+				content: content,
+			})
+		}
+	}
+
+	prefix := detectTarPrefix(files, dirs)
+
+	for _, f := range files {
+		name := f.name
+		if prefix != "" {
+			name = strings.TrimPrefix(name, prefix)
+			if name == "" {
+				continue
+			}
+		}
+
+		target := filepath.Join(dest, name)
+
+		if f.isDir {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("mkdir %q: %w", target, err)
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("mkdir parent %q: %w", target, err)
+		}
+
+		if err := os.WriteFile(target, f.content, f.mode); err != nil {
+			return fmt.Errorf("write %q: %w", target, err)
+		}
+	}
+
+	return nil
+}
+
+func detectTarPrefix(files []tarFile, dirs []string) string {
+	var topDir string
+	for _, d := range dirs {
+		if strings.Count(d, "/") == 1 && strings.HasSuffix(d, "/") {
+			if topDir != "" {
+				return ""
+			}
+			topDir = d
+		}
+	}
+	if topDir == "" {
+		return ""
+	}
+	for _, f := range files {
+		if f.name == topDir {
+			continue
+		}
+		if !strings.HasPrefix(f.name, topDir) {
+			return ""
+		}
+	}
+	return topDir
 }
 
 func extractZip(data []byte, dest string) error {
