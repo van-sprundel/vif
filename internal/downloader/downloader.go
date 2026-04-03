@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composerauth"
@@ -198,24 +199,68 @@ func (d *Downloader) gitClone(ctx context.Context, p pkg.Package) Result {
 	return Result{Package: p}
 }
 
-func (d *Downloader) fetch(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	d.auth.ApplyRequest(req)
+func (d *Downloader) fetch(ctx context.Context, rawURL string) ([]byte, error) {
+	const maxRetries = 3
+	baseDelay := 500 * time.Millisecond
 
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", url, err)
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			delay := baseDelay * time.Duration(1<<(attempt-1))
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, classifyFetchStatus(url, resp.StatusCode)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		d.auth.ApplyRequest(req)
+
+		resp, err := d.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+				continue
+			}
+			return body, nil
+		}
+
+		resp.Body.Close()
+
+		if isRetryableStatus(resp.StatusCode) && attempt < maxRetries-1 {
+			lastErr = fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
+			continue
+		}
+
+		return nil, classifyFetchStatus(rawURL, resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	return nil, fmt.Errorf("fetch %s: %d attempts failed: %w", rawURL, maxRetries, lastErr)
+}
+
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return code >= 500 && code <= 599
+	}
 }
 
 func classifyFetchStatus(rawURL string, statusCode int) error {
