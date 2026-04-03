@@ -3,6 +3,7 @@ package cache
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,14 +24,18 @@ type Entry struct {
 
 // Cache provides SQLite-backed package cache operations.
 type Cache struct {
-	db  *sql.DB
-	dir string // root cache directory
+	db             *sql.DB
+	dir            string // root cache directory
+	insertPkgStmt  *sql.Stmt
+	lookupPkgStmt  *sql.Stmt
+	insertMetaStmt *sql.Stmt
+	lookupMetaStmt *sql.Stmt
 }
 
 // CacheKey computes the cache key for a dist URL: hex-encoded SHA-256.
 func CacheKey(distURL string) string {
 	h := sha256.Sum256([]byte(distURL))
-	return fmt.Sprintf("%x", h)
+	return hex.EncodeToString(h[:])
 }
 
 // New opens (or creates) the cache at dir.
@@ -70,17 +75,7 @@ func New(dir string) (*Cache, error) {
 		return nil, fmt.Errorf("cache: create metadata table: %w", err)
 	}
 
-	return &Cache{db: db, dir: dir}, nil
-}
-
-// Close closes the underlying database connection.
-func (c *Cache) Close() error {
-	return c.db.Close()
-}
-
-// Insert adds or updates a package entry in the cache.
-func (c *Cache) Insert(name, version, distURL, distRef, cacheKey string) error {
-	const query = `
+	insertPkgStmt, err := db.Prepare(`
 		INSERT INTO packages (name, version, dist_url, dist_ref, cache_key, cached_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (name, version) DO UPDATE SET
@@ -88,8 +83,81 @@ func (c *Cache) Insert(name, version, distURL, distRef, cacheKey string) error {
 			dist_ref  = excluded.dist_ref,
 			cache_key = excluded.cache_key,
 			cached_at = excluded.cached_at
-	`
-	_, err := c.db.Exec(query, name, version, distURL, distRef, cacheKey, time.Now().Unix())
+	`)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare package insert: %w", err)
+	}
+
+	lookupPkgStmt, err := db.Prepare(`
+		SELECT name, version, dist_url, dist_ref, cache_key, cached_at
+		FROM packages
+		WHERE name = ? AND version = ?
+	`)
+	if err != nil {
+		insertPkgStmt.Close()
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare package lookup: %w", err)
+	}
+
+	insertMetaStmt, err := db.Prepare(`
+		INSERT INTO metadata (repo_url, package, etag, body, fetched_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (repo_url, package) DO UPDATE SET
+			etag       = excluded.etag,
+			body       = excluded.body,
+			fetched_at = excluded.fetched_at
+	`)
+	if err != nil {
+		lookupPkgStmt.Close()
+		insertPkgStmt.Close()
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare metadata insert: %w", err)
+	}
+
+	lookupMetaStmt, err := db.Prepare(`
+		SELECT etag, body
+		FROM metadata
+		WHERE repo_url = ? AND package = ?
+	`)
+	if err != nil {
+		insertMetaStmt.Close()
+		lookupPkgStmt.Close()
+		insertPkgStmt.Close()
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare metadata lookup: %w", err)
+	}
+
+	return &Cache{
+		db:             db,
+		dir:            dir,
+		insertPkgStmt:  insertPkgStmt,
+		lookupPkgStmt:  lookupPkgStmt,
+		insertMetaStmt: insertMetaStmt,
+		lookupMetaStmt: lookupMetaStmt,
+	}, nil
+}
+
+// Close closes the underlying database connection.
+func (c *Cache) Close() error {
+	if c.lookupMetaStmt != nil {
+		_ = c.lookupMetaStmt.Close()
+	}
+	if c.insertMetaStmt != nil {
+		_ = c.insertMetaStmt.Close()
+	}
+	if c.lookupPkgStmt != nil {
+		_ = c.lookupPkgStmt.Close()
+	}
+	if c.insertPkgStmt != nil {
+		_ = c.insertPkgStmt.Close()
+	}
+	return c.db.Close()
+}
+
+// Insert adds or updates a package entry in the cache.
+func (c *Cache) Insert(name, version, distURL, distRef, cacheKey string) error {
+	_, err := c.insertPkgStmt.Exec(name, version, distURL, distRef, cacheKey, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("cache: insert %s@%s: %w", name, version, err)
 	}
@@ -99,13 +167,8 @@ func (c *Cache) Insert(name, version, distURL, distRef, cacheKey string) error {
 // Lookup retrieves a cached package entry by name and version.
 // Returns the entry and true if found, or a zero Entry and false if not.
 func (c *Cache) Lookup(name, version string) (Entry, bool, error) {
-	const query = `
-		SELECT name, version, dist_url, dist_ref, cache_key, cached_at
-		FROM packages
-		WHERE name = ? AND version = ?
-	`
 	var e Entry
-	err := c.db.QueryRow(query, name, version).Scan(
+	err := c.lookupPkgStmt.QueryRow(name, version).Scan(
 		&e.Name, &e.Version, &e.DistURL, &e.DistRef, &e.CacheKey, &e.CachedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -120,13 +183,8 @@ func (c *Cache) Lookup(name, version string) (Entry, bool, error) {
 // LookupMetadata returns the cached P2 metadata for a package from a specific repo.
 // Returns (etag, body, true, nil) if found, or ("", nil, false, nil) if not present.
 func (c *Cache) LookupMetadata(repoURL, packageName string) (etag string, body []byte, ok bool, err error) {
-	const query = `
-		SELECT etag, body
-		FROM metadata
-		WHERE repo_url = ? AND package = ?
-	`
 	var e, b []byte
-	scanErr := c.db.QueryRow(query, repoURL, packageName).Scan(&e, &b)
+	scanErr := c.lookupMetaStmt.QueryRow(repoURL, packageName).Scan(&e, &b)
 	if scanErr == sql.ErrNoRows {
 		return "", nil, false, nil
 	}
@@ -138,15 +196,7 @@ func (c *Cache) LookupMetadata(repoURL, packageName string) (etag string, body [
 
 // InsertMetadata stores or updates the cached P2 metadata for a package.
 func (c *Cache) InsertMetadata(repoURL, packageName, etag string, body []byte) error {
-	const query = `
-		INSERT INTO metadata (repo_url, package, etag, body, fetched_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (repo_url, package) DO UPDATE SET
-			etag       = excluded.etag,
-			body       = excluded.body,
-			fetched_at = excluded.fetched_at
-	`
-	_, err := c.db.Exec(query, repoURL, packageName, etag, body, time.Now().Unix())
+	_, err := c.insertMetaStmt.Exec(repoURL, packageName, etag, body, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("cache: insert metadata %s %s: %w", repoURL, packageName, err)
 	}
