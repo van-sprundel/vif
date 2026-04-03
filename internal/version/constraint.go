@@ -37,6 +37,14 @@ type bound struct {
 // Supports: exact, >, >=, <, <=, !=, ^, ~, *, spaces/commas for AND, || or | for OR.
 func ParseConstraint(s string) (Constraint, error) {
 	s = strings.TrimSpace(s)
+
+	// Strip per-constraint stability flags like @RC, @beta, @alpha, @stable, @dev.
+	// These override minimum-stability for a specific package but don't affect
+	// the constraint bounds themselves.
+	if at := strings.Index(s, "@"); at >= 0 {
+		s = s[:at]
+	}
+
 	if s == "" {
 		return Constraint{}, fmt.Errorf("constraint: empty string")
 	}

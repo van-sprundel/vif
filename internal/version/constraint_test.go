@@ -149,3 +149,28 @@ func TestConstraintString(t *testing.T) {
 		})
 	}
 }
+
+func TestConstraintStabilityFlag(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"^2.0.2@RC", ">=2.0.2 <3.0.0"},
+		{"^1.0@beta", ">=1.0.0 <2.0.0"},
+		{">=1.0.0@stable", ">=1.0.0"},
+		{"~1.2@alpha", ">=1.2.0 <2.0.0"},
+		{"1.0.0@dev", "1.0.0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			c, err := ParseConstraint(tc.input)
+			if err != nil {
+				t.Fatalf("ParseConstraint(%q): %v", tc.input, err)
+			}
+			if got := c.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
