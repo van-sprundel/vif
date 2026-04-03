@@ -158,3 +158,25 @@ func sortCandidates(candidates []candidate, preferStable bool) {
 		return version.Compare(candidates[i].version, candidates[j].version) > 0
 	})
 }
+
+func preferLocked(candidates []candidate, lockedVersion string) []candidate {
+	if lockedVersion == "" || len(candidates) < 2 {
+		return candidates
+	}
+
+	for i, candidate := range candidates {
+		if candidate.entry.Version != lockedVersion {
+			continue
+		}
+		if i == 0 {
+			return candidates
+		}
+
+		preferred := candidate
+		copy(candidates[1:i+1], candidates[0:i])
+		candidates[0] = preferred
+		return candidates
+	}
+
+	return candidates
+}
