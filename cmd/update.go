@@ -45,16 +45,6 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	}
 	fmt.Fprintf(w, "Resolving dependencies for %s...\n", cj.Name)
 
-	lockedVersions := make(map[string]string)
-	if lf, err := lockfile.Parse("composer.lock"); err == nil {
-		for _, pkg := range lf.Packages {
-			lockedVersions[pkg.Name] = pkg.Version
-		}
-		for _, pkg := range lf.PackagesDev {
-			lockedVersions[pkg.Name] = pkg.Version
-		}
-	}
-
 	// 2. Open the persistent cache (shared with install phase).
 	cacheDir, err := cacheDirectory()
 	if err != nil {
@@ -77,7 +67,6 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	}
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
-		Locked:             lockedVersions,
 		RestrictedPackages: restrictedPackages,
 		Restriction:        restriction,
 	}, func(name string) {
