@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var Version = "dev"
+
 // newRootCmd builds and returns the root cobra command with all subcommands attached.
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -19,6 +21,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	root.Version = Version
 	root.AddCommand(newInstallCmd())
 	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newRequireCmd())
