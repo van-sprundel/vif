@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/pkg"
@@ -18,7 +20,15 @@ import (
 
 // Installer populates vendor/ from the cache via hardlinks (fallback: copy).
 type Installer struct {
-	cache *cache.Cache
+	cache   *cache.Cache
+	workers int
+}
+
+// installJob represents a single package installation task.
+type installJob struct {
+	pkg pkg.Package
+	src string
+	dst string
 }
 
 // RootPackage describes the root project metadata Composer exposes at runtime.
@@ -29,8 +39,19 @@ type RootPackage struct {
 }
 
 // New creates an Installer backed by the given cache.
+// Workers defaults to min(numCPU, 8) for filesystem operations.
 func New(c *cache.Cache) *Installer {
-	return &Installer{cache: c}
+	return &Installer{
+		cache:   c,
+		workers: min(runtime.NumCPU(), 8),
+	}
+}
+
+// SetWorkers overrides the number of parallel workers.
+func (inst *Installer) SetWorkers(n int) {
+	if n > 0 {
+		inst.workers = n
+	}
 }
 
 // Install links all packages from cache into vendorDir, removes stale packages,
@@ -50,38 +71,33 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 		return fmt.Errorf("remove stale: %w", err)
 	}
 
-	// Link each package from cache to vendor.
+	// Build jobs for parallel installation.
+	jobs := make([]installJob, 0, len(all))
 	for _, p := range all {
+		var src string
+
 		if p.Dist.Type == "path" && strings.TrimSpace(p.Dist.URL) != "" {
-			dst := filepath.Join(vendorDir, p.Name)
-			if err := linkPackage(p.Dist.URL, dst); err != nil {
-				return fmt.Errorf("install path package %s: %w", p.Name, err)
-			}
-			continue
-		}
-
-		if pkg.RequiresGitClone(p) {
+			src = p.Dist.URL
+		} else if pkg.RequiresGitClone(p) {
 			key := cache.CacheKey(p.Source.URL + "@" + p.Source.Reference)
-			src := inst.cache.ExtractedDir(key)
-			dst := filepath.Join(vendorDir, p.Name)
-			if err := linkPackage(src, dst); err != nil {
-				return fmt.Errorf("install %s: %w", p.Name, err)
-			}
+			src = inst.cache.ExtractedDir(key)
+		} else if pkg.RequiresDownload(p) {
+			key := cache.CacheKey(p.Dist.URL)
+			src = inst.cache.ExtractedDir(key)
+		} else {
 			continue
 		}
 
-		// Skip packages that do not have a cacheable/installable source.
-		if !pkg.RequiresDownload(p) {
-			continue
-		}
+		jobs = append(jobs, installJob{
+			pkg: p,
+			src: src,
+			dst: filepath.Join(vendorDir, p.Name),
+		})
+	}
 
-		key := cache.CacheKey(p.Dist.URL)
-		src := inst.cache.ExtractedDir(key)
-		dst := filepath.Join(vendorDir, p.Name)
-
-		if err := linkPackage(src, dst); err != nil {
-			return fmt.Errorf("install %s: %w", p.Name, err)
-		}
+	// Install packages in parallel.
+	if err := inst.installParallel(jobs); err != nil {
+		return err
 	}
 
 	// Create vendor/bin/ proxies.
@@ -94,6 +110,44 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 		return fmt.Errorf("write installed metadata: %w", err)
 	}
 
+	return nil
+}
+
+// installParallel links packages from cache to vendor using a worker pool.
+func (inst *Installer) installParallel(jobs []installJob) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	work := make(chan int, len(jobs))
+	errs := make([]error, len(jobs))
+
+	var wg sync.WaitGroup
+	for range inst.workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range work {
+				job := jobs[idx]
+				if err := linkPackage(job.src, job.dst); err != nil {
+					errs[idx] = fmt.Errorf("install %s: %w", job.pkg.Name, err)
+				}
+			}
+		}()
+	}
+
+	for i := range jobs {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+
+	// Return first error encountered.
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
