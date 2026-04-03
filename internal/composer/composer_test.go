@@ -22,6 +22,15 @@ func TestParseComposerJSON(t *testing.T) {
 		"require-dev": {
 			"phpunit/phpunit": "^10.0"
 		},
+		"replace": {
+			"symfony/polyfill-ctype": "*"
+		},
+		"provide": {
+			"acme/contract": "1.0.0"
+		},
+		"conflict": {
+			"acme/bad-lib": "^2.0"
+		},
 		"minimum-stability": "beta",
 		"prefer-stable": true,
 		"extra": {
@@ -57,6 +66,15 @@ func TestParseComposerJSON(t *testing.T) {
 	// RequireDev.
 	if len(cj.RequireDev) != 1 {
 		t.Errorf("len(RequireDev) = %d, want 1", len(cj.RequireDev))
+	}
+	if cj.Replace["symfony/polyfill-ctype"] != "*" {
+		t.Errorf("Replace[symfony/polyfill-ctype] = %q", cj.Replace["symfony/polyfill-ctype"])
+	}
+	if cj.Provide["acme/contract"] != "1.0.0" {
+		t.Errorf("Provide[acme/contract] = %q", cj.Provide["acme/contract"])
+	}
+	if cj.Conflict["acme/bad-lib"] != "^2.0" {
+		t.Errorf("Conflict[acme/bad-lib] = %q", cj.Conflict["acme/bad-lib"])
 	}
 
 	// Stability.

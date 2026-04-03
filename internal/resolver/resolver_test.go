@@ -903,6 +903,61 @@ func TestResolveProvideWildcard(t *testing.T) {
 	}
 }
 
+func TestResolveRootReplaceSatisfiesDependency(t *testing.T) {
+	reg := newRegistry()
+	reg.add("symfony/string", "6.4.34", map[string]string{"symfony/polyfill-ctype": "~1.8"})
+	reg.addFull("symfony/polyfill-ctype", "v1.33.0", nil, map[string]string{"ext-ctype": "*"}, nil, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/string": "6.4.*", "ext-ctype": "*"},
+		Replace:          map[string]string{"symfony/polyfill-ctype": "*"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["symfony/string"]; !ok {
+		t.Fatal("missing symfony/string")
+	}
+	if _, ok := byName["symfony/polyfill-ctype"]; ok {
+		t.Fatal("symfony/polyfill-ctype should be satisfied by root replace")
+	}
+}
+
+func TestResolveHonorsRootConflicts(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/lib", "2.1.0", nil)
+	reg.add("acme/lib", "1.9.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/lib": ">=1.0"},
+		Conflict:         map[string]string{"acme/lib": "^2.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/lib"].Version != "1.9.0" {
+		t.Fatalf("acme/lib = %q, want 1.9.0", byName["acme/lib"].Version)
+	}
+}
+
 // --- error message tests ---
 
 func TestResolveErrorMessageUnsatisfiable(t *testing.T) {

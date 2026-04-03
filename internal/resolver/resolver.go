@@ -69,6 +69,9 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		minimumStability: minimumStability,
 		preferStable:     cj.PreferStable,
 		locked:           opts.Locked,
+		rootProvide:      cj.Provide,
+		rootReplace:      cj.Replace,
+		rootConflict:     cj.Conflict,
 		versionCache:     versionCache,
 		// progress is nil during solve to avoid double-reporting; all lookups
 		// were already reported during the prefetch pass above.
@@ -217,6 +220,9 @@ type resolver struct {
 	minimumStability   version.Stability
 	preferStable       bool
 	locked             map[string]string
+	rootProvide        map[string]string
+	rootReplace        map[string]string
+	rootConflict       map[string]string
 	restriction        version.Constraint
 	hasRestriction     bool
 	restrictedPackages map[string]struct{}
@@ -299,6 +305,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 			}
 			return r.solve(s, rest)
 		}
+	}
+	if r.rootSatisfies(req.name, pendingConstraints) {
+		return r.solve(s, rest)
 	}
 
 	// Fetch candidates from packagist.
@@ -653,6 +662,9 @@ func matchesAll(v version.Version, constraints []version.Constraint) bool {
 }
 
 func (r *resolver) conflictsWithResolved(candidate packagist.VersionEntry, s *state) (string, bool) {
+	if reason, ok := rootConflictReason(candidate, r.rootConflict); ok {
+		return reason, true
+	}
 	for resolvedName, resolved := range s.resolved {
 		if reason, ok := packageConflictReason(candidate, resolved.entry); ok {
 			return reason, true
@@ -666,6 +678,25 @@ func (r *resolver) conflictsWithResolved(candidate packagist.VersionEntry, s *st
 		}
 	}
 	return "", false
+}
+
+func (r *resolver) rootSatisfies(name string, constraints []version.Constraint) bool {
+	relVersion := r.rootProvide[name]
+	if relVersion == "" {
+		relVersion = r.rootReplace[name]
+	}
+	if relVersion == "" {
+		return false
+	}
+	if relVersion == "*" {
+		return true
+	}
+
+	v, err := version.Parse(relVersion)
+	if err != nil {
+		return false
+	}
+	return matchesAll(v, constraints)
 }
 
 func packageConflictReason(a, b packagist.VersionEntry) (string, bool) {
@@ -689,6 +720,29 @@ func packageConflictReason(a, b packagist.VersionEntry) (string, bool) {
 	}
 
 	return fmt.Sprintf("%s@%s conflicts with already resolved %s@%s via constraint %s", a.Name, a.Version, b.Name, b.Version, constraintStr), true
+}
+
+func rootConflictReason(candidate packagist.VersionEntry, conflicts map[string]string) (string, bool) {
+	constraintStr, ok := conflicts[candidate.Name]
+	if !ok || constraintStr == "" {
+		return "", false
+	}
+
+	constraint, err := version.ParseConstraint(constraintStr)
+	if err != nil {
+		return "", false
+	}
+
+	v, err := version.Parse(candidate.Version)
+	if err != nil {
+		return "", false
+	}
+
+	if !constraint.Matches(v) {
+		return "", false
+	}
+
+	return fmt.Sprintf("root package conflicts with %s@%s via constraint %s", candidate.Name, candidate.Version, constraintStr), true
 }
 
 func parseStability(s string) version.Stability {
