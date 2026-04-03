@@ -264,6 +264,62 @@ func TestResolvePrefersLockedVersion(t *testing.T) {
 	}
 }
 
+func TestResolveAppliesSymfonyRequireConstraint(t *testing.T) {
+	reg := newRegistry()
+	reg.add("symfony/config", "7.4.8", nil)
+	reg.add("symfony/config", "6.4.34", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/config": "^6.1|^7.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		RestrictedPackages: map[string]struct{}{"symfony/config": {}},
+		Restriction:        "6.4.*",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["symfony/config"].Version != "6.4.34" {
+		t.Fatalf("config = %q, want restricted 6.4.34", byName["symfony/config"].Version)
+	}
+}
+
+func TestResolveSymfonyRequireDoesNotApplyToMonologBundle(t *testing.T) {
+	reg := newRegistry()
+	reg.add("symfony/monolog-bundle", "3.11.2", nil)
+	reg.add("symfony/monolog-bundle", "3.11.1", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/monolog-bundle": "^3.11"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		RestrictedPackages: map[string]struct{}{"symfony/config": {}},
+		Restriction:        "6.4.*",
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["symfony/monolog-bundle"].Version != "3.11.2" {
+		t.Fatalf("monolog-bundle = %q, want latest 3.11.2", byName["symfony/monolog-bundle"].Version)
+	}
+}
+
 func TestResolveUnsatisfiable(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "1.0.0", nil)

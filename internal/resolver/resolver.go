@@ -27,6 +27,9 @@ type Options struct {
 	// resolver prefers the locked version over newer candidates when it still
 	// satisfies all constraints.
 	Locked map[string]string
+	// RestrictedPackages constrains a specific package set to Restriction.
+	RestrictedPackages map[string]struct{}
+	Restriction        string
 }
 
 // Resolve resolves all dependencies from a composer.json using the given Packagist client.
@@ -70,6 +73,15 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		// progress is nil during solve to avoid double-reporting; all lookups
 		// were already reported during the prefetch pass above.
 		progress: nil,
+	}
+	if opts.Restriction != "" && len(opts.RestrictedPackages) > 0 {
+		c, err := version.ParseConstraint(opts.Restriction)
+		if err != nil {
+			return nil, fmt.Errorf("resolver: parse restriction %q: %w", opts.Restriction, err)
+		}
+		r.restriction = c
+		r.hasRestriction = true
+		r.restrictedPackages = opts.RestrictedPackages
 	}
 
 	// Collect all root requirements (prod + dev).
@@ -200,16 +212,19 @@ type conflict struct {
 }
 
 type resolver struct {
-	ctx              context.Context
-	client           packagist.Fetcher
-	minimumStability version.Stability
-	preferStable     bool
-	locked           map[string]string
-	versionCache     map[string]candidateCacheEntry
-	lastConflict     *conflict
-	terminalErr      error
-	progress         func(string)
-	depth            int
+	ctx                context.Context
+	client             packagist.Fetcher
+	minimumStability   version.Stability
+	preferStable       bool
+	locked             map[string]string
+	restriction        version.Constraint
+	hasRestriction     bool
+	restrictedPackages map[string]struct{}
+	versionCache       map[string]candidateCacheEntry
+	lastConflict       *conflict
+	terminalErr        error
+	progress           func(string)
+	depth              int
 }
 
 // recordConflict records a conflict, keeping the deepest (most specific) one.
@@ -524,7 +539,7 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		if cached.err != nil {
 			return nil, cached.err
 		}
-		return preferLocked(cached.candidates, r.locked[name]), nil
+		return preferLocked(r.filterCandidates(name, cached.candidates), r.locked[name]), nil
 	}
 	if r.progress != nil {
 		r.progress(name)
@@ -551,10 +566,27 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 
 	// Sort descending by version (highest first).
 	sortCandidates(candidates, r.preferStable)
-	candidates = preferLocked(candidates, r.locked[name])
+	candidates = preferLocked(r.filterCandidates(name, candidates), r.locked[name])
 
 	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
 	return candidates, nil
+}
+
+func (r *resolver) filterCandidates(name string, candidates []candidate) []candidate {
+	if !r.hasRestriction {
+		return candidates
+	}
+	if _, ok := r.restrictedPackages[name]; !ok {
+		return candidates
+	}
+
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		if r.restriction.Matches(candidate.version) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func mergePendingRequirements(req requirement, rest []requirement) (requirement, []requirement, []version.Constraint) {

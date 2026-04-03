@@ -10,8 +10,10 @@ import (
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
 	"github.com/van-sprundel/vif/internal/ui"
+	"github.com/van-sprundel/vif/internal/version"
 )
 
 // newUpdateCmd returns the `vif update` command.
@@ -69,9 +71,15 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	if err != nil {
 		return err
 	}
+	restrictedPackages, restriction, err := resolveRestrictedPackages(ctx, client, cj)
+	if err != nil {
+		return err
+	}
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
-		Locked: lockedVersions,
+		Locked:             lockedVersions,
+		RestrictedPackages: restrictedPackages,
+		Restriction:        restriction,
 	}, func(name string) {
 		progress.Increment(name)
 	})
@@ -98,4 +106,47 @@ func runUpdate(ctx context.Context, verbose bool) error {
 	ui.PrintSummary(w, len(resolved), start)
 
 	return nil
+}
+
+func resolveRestrictedPackages(ctx context.Context, client packagist.Fetcher, cj *composer.ComposerJSON) (map[string]struct{}, string, error) {
+	restriction := cj.Extra.Symfony.Require
+	if restriction == "" {
+		return nil, "", nil
+	}
+
+	constraint, err := version.ParseConstraint(restriction)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve symfony restriction %q: %w", restriction, err)
+	}
+
+	versions, err := client.GetPackage(ctx, "symfony/symfony")
+	if err != nil {
+		return nil, "", fmt.Errorf("fetch symfony/symfony metadata: %w", err)
+	}
+
+	var (
+		best          packagist.VersionEntry
+		bestVersion   version.Version
+		bestVersionOK bool
+	)
+	for _, entry := range versions {
+		v, err := version.Parse(entry.Version)
+		if err != nil || !constraint.Matches(v) {
+			continue
+		}
+		if !bestVersionOK || version.Compare(v, bestVersion) > 0 {
+			best = entry
+			bestVersion = v
+			bestVersionOK = true
+		}
+	}
+	if !bestVersionOK {
+		return nil, "", fmt.Errorf("resolve symfony restriction %q: no matching symfony/symfony version found", restriction)
+	}
+
+	restricted := make(map[string]struct{}, len(best.Replace))
+	for name := range best.Replace {
+		restricted[name] = struct{}{}
+	}
+	return restricted, restriction, nil
 }
