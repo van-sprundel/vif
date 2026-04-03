@@ -11,6 +11,10 @@ type Constraint struct {
 	// Each group is an AND of bounds.
 	groups []constraintGroup
 	text   string
+
+	// StabilityOverride is the per-constraint stability flag (e.g., @dev, @alpha).
+	// -1 means no override (use minimum-stability); otherwise it's a Stability value.
+	StabilityOverride int
 }
 
 type constraintGroup struct {
@@ -33,15 +37,32 @@ type bound struct {
 	version Version
 }
 
+// NoStabilityOverride indicates no per-constraint stability flag was specified.
+const NoStabilityOverride = -1
+
 // ParseConstraint parses a Composer constraint string.
 // Supports: exact, >, >=, <, <=, !=, ^, ~, *, spaces/commas for AND, || or | for OR.
 func ParseConstraint(s string) (Constraint, error) {
 	s = strings.TrimSpace(s)
 
-	// Strip per-constraint stability flags like @RC, @beta, @alpha, @stable, @dev.
+	// Extract per-constraint stability flags like @RC, @beta, @alpha, @stable, @dev.
 	// These override minimum-stability for a specific package but don't affect
 	// the constraint bounds themselves.
+	stabilityOverride := NoStabilityOverride
 	if at := strings.Index(s, "@"); at >= 0 {
+		flag := strings.ToLower(s[at+1:])
+		switch flag {
+		case "dev":
+			stabilityOverride = int(Dev)
+		case "alpha":
+			stabilityOverride = int(Alpha)
+		case "beta":
+			stabilityOverride = int(Beta)
+		case "rc":
+			stabilityOverride = int(RC)
+		case "stable":
+			stabilityOverride = int(Stable)
+		}
 		s = s[:at]
 	}
 
@@ -70,7 +91,7 @@ func ParseConstraint(s string) (Constraint, error) {
 		return Constraint{}, fmt.Errorf("constraint: no valid groups in %q", s)
 	}
 
-	return Constraint{groups: groups, text: renderConstraint(groups)}, nil
+	return Constraint{groups: groups, text: renderConstraint(groups), StabilityOverride: stabilityOverride}, nil
 }
 
 // parseGroup parses a single AND group (space or comma-separated bounds).
@@ -288,6 +309,26 @@ func (c Constraint) Matches(v Version) bool {
 		}
 	}
 	return false
+}
+
+// EffectiveStability returns the stability to use for filtering candidates.
+// Priority: explicit @flag > implicit from dev-branch > fallback minimum-stability.
+func (c Constraint) EffectiveStability(minimumStability Stability) Stability {
+	// Explicit override takes precedence.
+	if c.StabilityOverride != NoStabilityOverride {
+		return Stability(c.StabilityOverride)
+	}
+
+	// Check for implicit dev stability from dev-* branch constraints.
+	for _, g := range c.groups {
+		for _, b := range g.bounds {
+			if b.op == OpEq && b.version.Dev {
+				return Dev
+			}
+		}
+	}
+
+	return minimumStability
 }
 
 // LowerBound returns the highest >= or > lower bound across all OR groups.

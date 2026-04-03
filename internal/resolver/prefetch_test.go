@@ -180,7 +180,7 @@ func TestPopulateVersionCacheOmitsNotFound(t *testing.T) {
 		"acme/found":   {versions: []packagist.VersionEntry{{Name: "acme/found", Version: "1.0.0"}}},
 		"acme/missing": {err: packagist.ErrPackageNotFound},
 	}
-	populateVersionCache(cache, prefetched, 0, false)
+	populateVersionCache(cache, prefetched, false)
 
 	if _, ok := cache["acme/found"]; !ok {
 		t.Error("acme/found should be in cache")

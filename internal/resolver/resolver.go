@@ -61,7 +61,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	prefetched := prefetchMetadata(ctx, client, rootNames, progress)
 
 	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
-	populateVersionCache(versionCache, prefetched, minimumStability, cj.PreferStable)
+	populateVersionCache(versionCache, prefetched, cj.PreferStable)
 
 	r := &resolver{
 		ctx:              ctx,
@@ -310,8 +310,11 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		return r.solve(s, rest)
 	}
 
+	// Compute effective stability for this requirement (explicit @flag > implicit dev-branch > global).
+	effectiveStability := req.constraint.EffectiveStability(r.minimumStability)
+
 	// Fetch candidates from packagist.
-	candidates, err := r.getCandidates(req.name)
+	candidates, err := r.getCandidates(req.name, effectiveStability)
 	if err != nil || len(candidates) == 0 {
 		if err != nil && errors.Is(err, packagist.ErrPackageNotFound) {
 			if !req.deferred && hasPendingRootRequirement(rest) {
@@ -335,7 +338,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 				fmt.Sprintf("could not fetch package %s (not provided by any resolved package): %v", req.name, err))
 		} else {
 			r.recordConflict(req.name, req.constraint,
-				fmt.Sprintf("no versions of %s found matching stability %s", req.name, stabilityString(r.minimumStability)))
+				fmt.Sprintf("no versions of %s found matching stability %s", req.name, stabilityString(effectiveStability)))
 		}
 		return false
 	}
@@ -540,7 +543,7 @@ func transitiveReqs(entry packagist.VersionEntry, dev bool) []requirement {
 	return reqs
 }
 
-func (r *resolver) getCandidates(name string) ([]candidate, error) {
+func (r *resolver) getCandidates(name string, effectiveStability version.Stability) ([]candidate, error) {
 	if !r.checkContext() {
 		return nil, r.terminalErr
 	}
@@ -548,7 +551,10 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		if cached.err != nil {
 			return nil, cached.err
 		}
-		return preferLocked(r.filterCandidates(name, cached.candidates), r.locked[name]), nil
+		// Filter by effective stability (which may differ from global minimumStability
+		// if the requirement has an @dev/@alpha/etc flag or is a dev-branch constraint).
+		filtered := filterByStability(cached.candidates, effectiveStability)
+		return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
 	}
 	if r.progress != nil {
 		r.progress(name)
@@ -567,18 +573,32 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		if err != nil {
 			continue
 		}
-		if !v.StabilityAtLeast(r.minimumStability) {
-			continue
-		}
 		candidates = append(candidates, candidate{entry: entry, version: v})
 	}
 
 	// Sort descending by version (highest first).
 	sortCandidates(candidates, r.preferStable)
-	candidates = preferLocked(r.filterCandidates(name, candidates), r.locked[name])
 
+	// Cache ALL versions (no stability filtering), then filter for this request.
 	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
-	return candidates, nil
+
+	filtered := filterByStability(candidates, effectiveStability)
+	return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
+}
+
+// filterByStability returns candidates that meet the minimum stability requirement.
+func filterByStability(candidates []candidate, minStability version.Stability) []candidate {
+	if minStability == version.Dev {
+		// Dev accepts everything, no filtering needed.
+		return candidates
+	}
+	filtered := make([]candidate, 0, len(candidates))
+	for _, c := range candidates {
+		if c.version.StabilityAtLeast(minStability) {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }
 
 func (r *resolver) filterCandidates(name string, candidates []candidate) []candidate {
