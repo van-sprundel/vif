@@ -156,7 +156,13 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 		fmt.Fprintln(w, "Skipping autoload generation (--no-autoloader)")
 	} else {
 		fmt.Fprint(w, "Generating autoload files...")
-		if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault()); err != nil {
+		platformCheckMode := autoload.PlatformCheckFull
+		if !cj.Config.PlatformCheck.IsTrue() {
+			platformCheckMode = autoload.PlatformCheckDisabled
+		} else if cj.Config.PlatformCheck.IsPHPOnly() {
+			platformCheckMode = autoload.PlatformCheckPHPOnly
+		}
+		if err := autoload.Generate(vendorDir, allPackages, cj.ContentHash(), cj.Config.OptimizeAutoloader, root, cj.Config.PrependAutoloaderOrDefault(), platformCheckMode); err != nil {
 			return fmt.Errorf("autoload: %w", err)
 		}
 		fmt.Fprintln(w, " done")

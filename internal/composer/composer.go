@@ -39,8 +39,48 @@ type ComposerJSON struct {
 
 // composerConfig holds the config section of composer.json.
 type composerConfig struct {
-	OptimizeAutoloader bool  `json:"optimize-autoloader"`
-	PrependAutoloader  *bool `json:"prepend-autoloader,omitempty"` // default true
+	OptimizeAutoloader bool       `json:"optimize-autoloader"`
+	PrependAutoloader  *bool      `json:"prepend-autoloader,omitempty"`
+	PlatformCheck      *boolOrStr `json:"platform-check,omitempty"`
+}
+
+type boolOrStr struct {
+	Bool  bool
+	Str   string
+	IsStr bool
+}
+
+func (b *boolOrStr) UnmarshalJSON(data []byte) error {
+	var raw bool
+	if err := json.Unmarshal(data, &raw); err == nil {
+		b.Bool = raw
+		b.IsStr = false
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	b.Str = s
+	b.IsStr = true
+	return nil
+}
+
+func (b *boolOrStr) IsTrue() bool {
+	if b == nil {
+		return true
+	}
+	if b.IsStr {
+		return false
+	}
+	return b.Bool
+}
+
+func (b *boolOrStr) IsPHPOnly() bool {
+	if b == nil {
+		return false
+	}
+	return b.IsStr && b.Str == "php-only"
 }
 
 type composerExtra struct {

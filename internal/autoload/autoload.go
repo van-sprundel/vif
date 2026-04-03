@@ -28,7 +28,7 @@ type RootAutoload struct {
 // The hash is used as the suffix for class names (typically the content-hash from composer.lock).
 // If optimized is true, PSR-4/PSR-0 classes are scanned into the classmap (like composer dump-autoload -o).
 // If root is non-nil, root package autoload entries are included with $baseDir paths.
-func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool, root *RootAutoload, prependAutoloader bool) error {
+func Generate(vendorDir string, packages []pkg.Package, contentHash string, optimized bool, root *RootAutoload, prependAutoloader bool, platformCheck PlatformCheckConfig) error {
 	composerDir := filepath.Join(vendorDir, "composer")
 	if err := os.MkdirAll(composerDir, 0o755); err != nil {
 		return fmt.Errorf("autoload: mkdir: %w", err)
@@ -171,15 +171,25 @@ func Generate(vendorDir string, packages []pkg.Package, contentHash string, opti
 	}
 
 	// Generate each file.
+	hasPlatformCheck := false
+	platformCheckPHP := generatePlatformCheck(packages, platformCheck)
+	if platformCheckPHP != "" {
+		hasPlatformCheck = true
+	}
+
 	writers := map[string]string{
 		"autoload_psr4.php":       generatePsr4(psr4),
 		"autoload_namespaces.php": generateNamespaces(psr0),
 		"autoload_classmap.php":   generateClassmap(classmap),
 		"autoload_files.php":      generateFiles(files),
 		"autoload_static.php":     generateStatic(hash, psr4, psr0, classmap, files),
-		"autoload_real.php":       generateReal(hash, len(files) > 0, len(includePaths) > 0, prependAutoloader),
+		"autoload_real.php":       generateReal(hash, len(files) > 0, len(includePaths) > 0, prependAutoloader, hasPlatformCheck),
 		"ClassLoader.php":         classLoaderPHP,
 		"LICENSE":                 composerLicense,
+	}
+
+	if hasPlatformCheck {
+		writers["platform_check.php"] = platformCheckPHP
 	}
 
 	if len(includePaths) > 0 {
@@ -734,8 +744,13 @@ func buildStaticClassmap(classmap map[string]string) string {
 
 // --- autoload_real.php ---
 
-func generateReal(hash string, hasFiles bool, hasIncludePaths bool, prepend bool) string {
+func generateReal(hash string, hasFiles bool, hasIncludePaths bool, prepend bool, hasPlatformCheck bool) string {
 	s := autoloadRealPHP
+	if hasPlatformCheck {
+		s = strings.Replace(s, "<PLATFORM_CHECK>", "require __DIR__ . '/platform_check.php';\n\n        ", 1)
+	} else {
+		s = strings.Replace(s, "<PLATFORM_CHECK>", "", 1)
+	}
 	if hasIncludePaths {
 		s = strings.Replace(s, "<INCLUDE_PATHS>", includePathsBlock, 1)
 	} else {

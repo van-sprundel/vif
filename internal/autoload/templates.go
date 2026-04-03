@@ -110,7 +110,7 @@ class ComposerAutoloaderInit<HASH>
             return self::$loader;
         }
 
-        spl_autoload_register(array('ComposerAutoloaderInit<HASH>', 'loadClassLoader'), true, <PREPEND>);
+        <PLATFORM_CHECK>spl_autoload_register(array('ComposerAutoloaderInit<HASH>', 'loadClassLoader'), true, <PREPEND>);
         self::$loader = $loader = new \Composer\Autoload\ClassLoader(\dirname(__DIR__));
         spl_autoload_unregister(array('ComposerAutoloaderInit<HASH>', 'loadClassLoader'));
 

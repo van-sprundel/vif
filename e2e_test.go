@@ -188,7 +188,7 @@ func TestE2EInstall(t *testing.T) {
 	}
 
 	// Generate autoloader.
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true, autoload.PlatformCheckFull); err != nil {
 		t.Fatalf("autoload: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func runFullInstall(tb testing.TB, project testProject, serverURL string) string
 		tb.Fatalf("install: %v", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true, autoload.PlatformCheckFull); err != nil {
 		tb.Fatalf("autoload: %v", err)
 	}
 
@@ -392,7 +392,7 @@ func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cach
 		tb.Fatalf("install: %v", err)
 	}
 
-	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true); err != nil {
+	if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true, autoload.PlatformCheckFull); err != nil {
 		tb.Fatalf("autoload: %v", err)
 	}
 }
@@ -516,7 +516,7 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 			b.Fatalf("install: %v", err)
 		}
 
-		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true); err != nil {
+		if err := autoload.Generate(vendorDir, allPackages, lf.ContentHash, false, nil, true, autoload.PlatformCheckFull); err != nil {
 			b.Fatalf("autoload: %v", err)
 		}
 		c.Close()
