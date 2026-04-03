@@ -24,16 +24,17 @@ func newRegistry() *registry {
 }
 
 func (r *registry) add(name, version string, require map[string]string) {
-	r.addFull(name, version, require, nil, nil)
+	r.addFull(name, version, require, nil, nil, nil)
 }
 
-func (r *registry) addFull(name, ver string, require, provide, replace map[string]string) {
+func (r *registry) addFull(name, ver string, require, provide, replace, conflict map[string]string) {
 	r.packages[name] = append(r.packages[name], packagist.VersionEntry{
-		Name:    name,
-		Version: ver,
-		Require: require,
-		Provide: provide,
-		Replace: replace,
+		Name:     name,
+		Version:  ver,
+		Require:  require,
+		Provide:  provide,
+		Replace:  replace,
+		Conflict: conflict,
 		Dist: packagist.DistEntry{
 			URL:       "https://example.com/" + name + "/" + ver + ".zip",
 			Type:      "zip",
@@ -190,6 +191,49 @@ func TestResolveConflictRequiresBacktrack(t *testing.T) {
 	// shared should be ^1.0 compatible.
 	if byName["acme/shared"].Version != "1.5.0" {
 		t.Errorf("acme/shared = %q, want 1.5.0", byName["acme/shared"].Version)
+	}
+}
+
+func TestResolveHonorsPackageConflicts(t *testing.T) {
+	reg := newRegistry()
+	reg.add("symfony/framework-bundle", "6.4.36", map[string]string{
+		"symfony/config":          "^6.1|^7.0",
+		"symfony/http-foundation": "^6.4|^7.0",
+	})
+	reg.add("symfony/config", "7.4.8", nil)
+	reg.add("symfony/config", "6.4.34", nil)
+	reg.addFull("symfony/http-foundation", "7.4.8", nil, nil, nil, map[string]string{
+		"symfony/framework-bundle": "<7.0",
+	})
+	reg.add("symfony/http-foundation", "6.4.35", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"symfony/framework-bundle": "^6.4",
+			"symfony/config":           "^6.1|^7.0",
+			"symfony/http-foundation":  "^6.4|^7.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["symfony/framework-bundle"].Version != "6.4.36" {
+		t.Fatalf("framework-bundle = %q, want 6.4.36", byName["symfony/framework-bundle"].Version)
+	}
+	if byName["symfony/http-foundation"].Version != "6.4.35" {
+		t.Fatalf("http-foundation = %q, want 6.4.35", byName["symfony/http-foundation"].Version)
+	}
+	if byName["symfony/config"].Version != "7.4.8" {
+		t.Fatalf("config = %q, want 7.4.8", byName["symfony/config"].Version)
 	}
 }
 
@@ -602,7 +646,7 @@ func TestResolveProvide(t *testing.T) {
 	// acme/monolog provides psr/log-implementation 1.0.0
 	reg := newRegistry()
 	reg.add("acme/log", "1.0.0", map[string]string{"psr/log-implementation": "^1.0"})
-	reg.addFull("acme/monolog", "2.0.0", nil, map[string]string{"psr/log-implementation": "1.0.0"}, nil)
+	reg.addFull("acme/monolog", "2.0.0", nil, map[string]string{"psr/log-implementation": "1.0.0"}, nil, nil)
 
 	srv := reg.serve(t)
 	defer srv.Close()
@@ -641,7 +685,7 @@ func TestResolveReplace(t *testing.T) {
 	// acme/new-lib replaces acme/old-lib 1.0.0
 	reg := newRegistry()
 	reg.add("acme/app", "1.0.0", map[string]string{"acme/old-lib": "^1.0"})
-	reg.addFull("acme/new-lib", "2.0.0", nil, nil, map[string]string{"acme/old-lib": "1.0.0"})
+	reg.addFull("acme/new-lib", "2.0.0", nil, nil, map[string]string{"acme/old-lib": "1.0.0"}, nil)
 
 	srv := reg.serve(t)
 	defer srv.Close()
@@ -674,7 +718,7 @@ func TestResolveProvideWildcard(t *testing.T) {
 	// Provide with no version (wildcard) should satisfy any constraint.
 	reg := newRegistry()
 	reg.add("acme/consumer", "1.0.0", map[string]string{"acme/contract": "^2.0"})
-	reg.addFull("acme/impl", "1.0.0", nil, map[string]string{"acme/contract": "*"}, nil)
+	reg.addFull("acme/impl", "1.0.0", nil, map[string]string{"acme/contract": "*"}, nil, nil)
 
 	srv := reg.serve(t)
 	defer srv.Close()

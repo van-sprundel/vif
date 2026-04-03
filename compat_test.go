@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -66,6 +68,12 @@ var sharedCompatCache struct {
 	initErr error
 }
 
+var sharedCompatBinary struct {
+	once     sync.Once
+	path     string
+	buildErr error
+}
+
 // getSharedCache returns a shared cache dir, initialising it once per test run.
 // Set VIF_TEST_TEMP_DIR or VIF_COMPAT_CACHE_DIR to override the default repo-local cache location.
 func getSharedCache(t *testing.T) (string, error) {
@@ -85,6 +93,36 @@ func getSharedCache(t *testing.T) (string, error) {
 		t.Cleanup(func() { os.RemoveAll(dir) })
 	})
 	return sharedCompatCache.dir, sharedCompatCache.initErr
+}
+
+func getCompatBinary(t *testing.T) (string, error) {
+	t.Helper()
+	sharedCompatBinary.once.Do(func() {
+		base, err := testhelper.GetTestTempBase()
+		if err != nil {
+			sharedCompatBinary.buildErr = err
+			return
+		}
+
+		binDir, err := os.MkdirTemp(base, "vif-compat-bin-*")
+		if err != nil {
+			sharedCompatBinary.buildErr = fmt.Errorf("create compat binary dir: %w", err)
+			return
+		}
+
+		binPath := filepath.Join(binDir, "vif")
+		cmd := exec.Command("go", "build", "-o", binPath, ".")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			sharedCompatBinary.buildErr = fmt.Errorf("build vif compat binary: %w\noutput:\n%s", err, out)
+			return
+		}
+
+		sharedCompatBinary.path = binPath
+		t.Cleanup(func() { os.RemoveAll(binDir) })
+	})
+
+	return sharedCompatBinary.path, sharedCompatBinary.buildErr
 }
 
 // compatTempDir creates a per-test working directory on the same filesystem as
@@ -156,6 +194,31 @@ func runComposerInstall(t *testing.T, dir string) (string, error) {
 	return filepath.Join(dir, "vendor"), nil
 }
 
+func runComposerUpdate(t *testing.T, dir string) error {
+	t.Helper()
+	composerBin, err := exec.LookPath("composer")
+	if err != nil {
+		return fmt.Errorf("composer not in PATH: %w", err)
+	}
+
+	cmd := exec.Command(
+		composerBin,
+		"update",
+		"--no-scripts",
+		"--no-plugins",
+		"--no-interaction",
+		"--ignore-platform-reqs",
+	)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "COMPOSER_NO_AUDIT=1")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("composer update failed: %w\noutput:\n%s", err, out)
+	}
+	return nil
+}
+
 // runVifInstall runs the vif install pipeline in dir using a shared cache.
 func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 	t.Helper()
@@ -209,6 +272,25 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 	}
 
 	return vendorDir, nil
+}
+
+func runVifUpdate(t *testing.T, dir, cacheDir string) error {
+	t.Helper()
+
+	bin, err := getCompatBinary(t)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command(bin, "update")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cacheDir)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("vif update failed: %w\noutput:\n%s", err, out)
+	}
+	return nil
 }
 
 // walkVendor returns sorted relative paths of all files under vendorDir,
@@ -687,5 +769,178 @@ func copyCompatFile(t *testing.T, src, dst string) {
 	}
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		t.Fatalf("copyCompatFile write %s: %v", dst, err)
+	}
+}
+
+type compatLockSummary struct {
+	ContentHash      string            `json:"content-hash"`
+	MinimumStability string            `json:"minimum-stability"`
+	PreferStable     bool              `json:"prefer-stable"`
+	PreferLowest     bool              `json:"prefer-lowest"`
+	Platform         map[string]string `json:"platform"`
+	PlatformDev      map[string]string `json:"platform-dev"`
+	PluginAPIVersion string            `json:"plugin-api-version"`
+	Packages         map[string]string
+	PackagesDev      map[string]string
+}
+
+func loadCompatLockSummary(path string) (compatLockSummary, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return compatLockSummary{}, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var raw struct {
+		ContentHash      string            `json:"content-hash"`
+		MinimumStability string            `json:"minimum-stability"`
+		PreferStable     bool              `json:"prefer-stable"`
+		PreferLowest     bool              `json:"prefer-lowest"`
+		Platform         map[string]string `json:"platform"`
+		PlatformDev      map[string]string `json:"platform-dev"`
+		PluginAPIVersion string            `json:"plugin-api-version"`
+		Packages         []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"packages"`
+		PackagesDev []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"packages-dev"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return compatLockSummary{}, fmt.Errorf("unmarshal %s: %w", path, err)
+	}
+
+	summary := compatLockSummary{
+		ContentHash:      raw.ContentHash,
+		MinimumStability: raw.MinimumStability,
+		PreferStable:     raw.PreferStable,
+		PreferLowest:     raw.PreferLowest,
+		Platform:         raw.Platform,
+		PlatformDev:      raw.PlatformDev,
+		PluginAPIVersion: raw.PluginAPIVersion,
+		Packages:         make(map[string]string, len(raw.Packages)),
+		PackagesDev:      make(map[string]string, len(raw.PackagesDev)),
+	}
+	for _, pkg := range raw.Packages {
+		summary.Packages[pkg.Name] = pkg.Version
+	}
+	for _, pkg := range raw.PackagesDev {
+		summary.PackagesDev[pkg.Name] = pkg.Version
+	}
+	return summary, nil
+}
+
+func diffLockMaps(label string, want, got map[string]string) []string {
+	var diffs []string
+	for name, wantVersion := range want {
+		gotVersion, ok := got[name]
+		if !ok {
+			diffs = append(diffs, fmt.Sprintf("%s missing %s@%s", label, name, wantVersion))
+			continue
+		}
+		if gotVersion != wantVersion {
+			diffs = append(diffs, fmt.Sprintf("%s version mismatch for %s: composer=%s vif=%s", label, name, wantVersion, gotVersion))
+		}
+	}
+	for name, gotVersion := range got {
+		if _, ok := want[name]; !ok {
+			diffs = append(diffs, fmt.Sprintf("%s extra %s@%s", label, name, gotVersion))
+		}
+	}
+	sort.Strings(diffs)
+	return diffs
+}
+
+func diffLockSummaries(composerLock, vifLock compatLockSummary) []string {
+	var diffs []string
+	if composerLock.ContentHash != vifLock.ContentHash {
+		diffs = append(diffs, fmt.Sprintf("content-hash mismatch: composer=%s vif=%s", composerLock.ContentHash, vifLock.ContentHash))
+	}
+	if composerLock.MinimumStability != vifLock.MinimumStability {
+		diffs = append(diffs, fmt.Sprintf("minimum-stability mismatch: composer=%s vif=%s", composerLock.MinimumStability, vifLock.MinimumStability))
+	}
+	if composerLock.PreferStable != vifLock.PreferStable {
+		diffs = append(diffs, fmt.Sprintf("prefer-stable mismatch: composer=%t vif=%t", composerLock.PreferStable, vifLock.PreferStable))
+	}
+	if composerLock.PreferLowest != vifLock.PreferLowest {
+		diffs = append(diffs, fmt.Sprintf("prefer-lowest mismatch: composer=%t vif=%t", composerLock.PreferLowest, vifLock.PreferLowest))
+	}
+	if !reflect.DeepEqual(composerLock.Platform, vifLock.Platform) {
+		diffs = append(diffs, fmt.Sprintf("platform mismatch: composer=%v vif=%v", composerLock.Platform, vifLock.Platform))
+	}
+	if !reflect.DeepEqual(composerLock.PlatformDev, vifLock.PlatformDev) {
+		diffs = append(diffs, fmt.Sprintf("platform-dev mismatch: composer=%v vif=%v", composerLock.PlatformDev, vifLock.PlatformDev))
+	}
+	if composerLock.PluginAPIVersion != vifLock.PluginAPIVersion {
+		diffs = append(diffs, fmt.Sprintf("plugin-api-version mismatch: composer=%s vif=%s", composerLock.PluginAPIVersion, vifLock.PluginAPIVersion))
+	}
+	diffs = append(diffs, diffLockMaps("packages", composerLock.Packages, vifLock.Packages)...)
+	diffs = append(diffs, diffLockMaps("packages-dev", composerLock.PackagesDev, vifLock.PackagesDev)...)
+	sort.Strings(diffs)
+	return diffs
+}
+
+func isKnownCompatUpdateSkip(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no versions of lox/xhprof found matching stability stable") ||
+		strings.Contains(msg, "no versions of amirami/localizator found matching stability stable") ||
+		strings.Contains(msg, "private/custom repositories are not supported yet")
+}
+
+func TestCompatUpdateLockfile(t *testing.T) {
+	if _, err := exec.LookPath("composer"); err != nil {
+		t.Skip("composer not found in PATH")
+	}
+
+	fixtures := discoverCompatFixtures(t)
+	cacheDir, err := getSharedCache(t)
+	if err != nil {
+		t.Fatalf("shared cache: %v", err)
+	}
+	if _, err := getCompatBinary(t); err != nil {
+		t.Fatalf("compat binary: %v", err)
+	}
+
+	for _, name := range fixtures {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			fixtureDir := filepath.Join(compatFixturesDir, name)
+
+			composerDir := compatTempDir(t, "composer-update-*")
+			copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(composerDir, "composer.json"))
+			copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(composerDir, "composer.lock"))
+
+			if err := runComposerUpdate(t, composerDir); err != nil {
+				t.Skipf("composer update failed (skipping fixture): %v", err)
+			}
+
+			vifDir := compatTempDir(t, "vif-update-*")
+			copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(vifDir, "composer.json"))
+			copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(vifDir, "composer.lock"))
+
+			if err := runVifUpdate(t, vifDir, cacheDir); err != nil {
+				if isKnownCompatUpdateSkip(err) {
+					t.Skipf("vif update unsupported for this fixture: %v", err)
+				}
+				t.Fatalf("vif update failed: %v", err)
+			}
+
+			composerLock, err := loadCompatLockSummary(filepath.Join(composerDir, "composer.lock"))
+			if err != nil {
+				t.Fatalf("load composer lock summary: %v", err)
+			}
+			vifLock, err := loadCompatLockSummary(filepath.Join(vifDir, "composer.lock"))
+			if err != nil {
+				t.Fatalf("load vif lock summary: %v", err)
+			}
+
+			if diffs := diffLockSummaries(composerLock, vifLock); len(diffs) > 0 {
+				t.Errorf("lockfile mismatches (%d):\n  %s", len(diffs), strings.Join(diffs, "\n  "))
+			}
+		})
 	}
 }
