@@ -1,5 +1,8 @@
 vif*
+
 vendor/
 .compat-cache/
-.tmp
-tmp
+/.tmp
+/tmp
+
+/*.prof
