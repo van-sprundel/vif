@@ -316,6 +316,11 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 			lastRejectedVersion = c.entry.Version
 			continue
 		}
+		if conflictReason, ok := r.conflictsWithResolved(c.entry, s); ok {
+			lastRejectedVersion = c.entry.Version
+			r.recordConflict(req.name, req.constraint, conflictReason)
+			continue
+		}
 
 		// Try this candidate: snapshot state, resolve transitive deps.
 		snapshot := s.clone()
@@ -594,6 +599,45 @@ func matchesAll(v version.Version, constraints []version.Constraint) bool {
 		}
 	}
 	return true
+}
+
+func (r *resolver) conflictsWithResolved(candidate packagist.VersionEntry, s *state) (string, bool) {
+	for resolvedName, resolved := range s.resolved {
+		if reason, ok := packageConflictReason(candidate, resolved.entry); ok {
+			return reason, true
+		}
+		if reason, ok := packageConflictReason(resolved.entry, candidate); ok {
+			return reason, true
+		}
+
+		if prov, ok := s.providers[candidate.Name]; ok && prov.realName == resolvedName {
+			continue
+		}
+	}
+	return "", false
+}
+
+func packageConflictReason(a, b packagist.VersionEntry) (string, bool) {
+	constraintStr, ok := a.Conflict[b.Name]
+	if !ok || constraintStr == "" {
+		return "", false
+	}
+
+	constraint, err := version.ParseConstraint(constraintStr)
+	if err != nil {
+		return "", false
+	}
+
+	v, err := version.Parse(b.Version)
+	if err != nil {
+		return "", false
+	}
+
+	if !constraint.Matches(v) {
+		return "", false
+	}
+
+	return fmt.Sprintf("%s@%s conflicts with already resolved %s@%s via constraint %s", a.Name, a.Version, b.Name, b.Version, constraintStr), true
 }
 
 func parseStability(s string) version.Stability {
