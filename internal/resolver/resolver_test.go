@@ -237,6 +237,33 @@ func TestResolveHonorsPackageConflicts(t *testing.T) {
 	}
 }
 
+func TestResolvePrefersLockedVersion(t *testing.T) {
+	reg := newRegistry()
+	reg.add("symfony/config", "7.4.8", nil)
+	reg.add("symfony/config", "6.4.34", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/config": "^6.1|^7.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		Locked: map[string]string{"symfony/config": "6.4.34"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["symfony/config"].Version != "6.4.34" {
+		t.Fatalf("config = %q, want locked 6.4.34", byName["symfony/config"].Version)
+	}
+}
+
 func TestResolveUnsatisfiable(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "1.0.0", nil)

@@ -21,6 +21,14 @@ type ResolvedPackage struct {
 	Dev     bool // true if only required via require-dev
 }
 
+// Options controls solver behavior for update-like flows.
+type Options struct {
+	// Locked maps package name -> currently locked version. When set, the
+	// resolver prefers the locked version over newer candidates when it still
+	// satisfies all constraints.
+	Locked map[string]string
+}
+
 // Resolve resolves all dependencies from a composer.json using the given Packagist client.
 // Returns a flat list of all resolved packages (including transitive dependencies).
 func Resolve(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher) ([]ResolvedPackage, error) {
@@ -29,6 +37,11 @@ func Resolve(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fe
 
 // ResolveWithProgress resolves dependencies and reports each unique package lookup.
 func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher, progress func(string)) ([]ResolvedPackage, error) {
+	return ResolveWithOptions(ctx, cj, client, Options{}, progress)
+}
+
+// ResolveWithOptions resolves dependencies with optional locked-version preferences.
+func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client packagist.Fetcher, opts Options, progress func(string)) ([]ResolvedPackage, error) {
 	minimumStability := parseStability(cj.MinimumStability)
 
 	// Collect root package names for the parallel prefetch pass.
@@ -52,6 +65,7 @@ func ResolveWithProgress(ctx context.Context, cj *composer.ComposerJSON, client 
 		client:           client,
 		minimumStability: minimumStability,
 		preferStable:     cj.PreferStable,
+		locked:           opts.Locked,
 		versionCache:     versionCache,
 		// progress is nil during solve to avoid double-reporting; all lookups
 		// were already reported during the prefetch pass above.
@@ -190,6 +204,7 @@ type resolver struct {
 	client           packagist.Fetcher
 	minimumStability version.Stability
 	preferStable     bool
+	locked           map[string]string
 	versionCache     map[string]candidateCacheEntry
 	lastConflict     *conflict
 	terminalErr      error
@@ -506,7 +521,10 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 		return nil, r.terminalErr
 	}
 	if cached, ok := r.versionCache[name]; ok {
-		return cached.candidates, cached.err
+		if cached.err != nil {
+			return nil, cached.err
+		}
+		return preferLocked(cached.candidates, r.locked[name]), nil
 	}
 	if r.progress != nil {
 		r.progress(name)
@@ -533,6 +551,7 @@ func (r *resolver) getCandidates(name string) ([]candidate, error) {
 
 	// Sort descending by version (highest first).
 	sortCandidates(candidates, r.preferStable)
+	candidates = preferLocked(candidates, r.locked[name])
 
 	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
 	return candidates, nil
