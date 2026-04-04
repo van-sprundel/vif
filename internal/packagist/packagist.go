@@ -171,9 +171,10 @@ type MetadataCache interface {
 
 // cacheEntry stores a cached API response with its ETag.
 type cacheEntry struct {
-	etag     string
-	versions []VersionEntry
-	notFound bool
+	etag      string
+	versions  []VersionEntry
+	notFound  bool
+	devMerged bool
 }
 
 type composerRootResponse struct {
@@ -261,7 +262,7 @@ func (c *Client) SetMetadataCache(mc MetadataCache) {
 	c.metaCache = mc
 }
 
-// GetPackage fetches all versions of a package from Packagist.
+// GetPackage fetches all versions of a package from Packagist (stable + dev).
 // Uses ETag-based HTTP caching to avoid redundant downloads.
 func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
 	c.mu.RLock()
@@ -274,13 +275,21 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	if hasCached && cached.notFound {
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
-	if hasCached && cached.etag == "" && len(cached.versions) > 0 {
+	if hasCached && cached.devMerged {
 		return cached.versions, nil
 	}
 
 	versions, err := c.getPackageP2(ctx, name, cached, hasCached)
 	if err == nil {
-		return versions, nil
+		devVersions := c.fetchP2Dev(ctx, name)
+		merged := mergeVersionEntries(versions, devVersions)
+		c.mu.Lock()
+		entry := c.cache[name]
+		entry.versions = merged
+		entry.devMerged = true
+		c.cache[name] = entry
+		c.mu.Unlock()
+		return merged, nil
 	}
 	if !errors.Is(err, ErrPackageNotFound) {
 		return nil, err
@@ -290,10 +299,13 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	if err != nil {
 		return nil, err
 	}
+
+	devVersions := c.fetchP2Dev(ctx, name)
+	merged := mergeVersionEntries(versions, devVersions)
 	c.mu.Lock()
-	c.cache[name] = cacheEntry{versions: versions}
+	c.cache[name] = cacheEntry{versions: merged, devMerged: true}
 	c.mu.Unlock()
-	return versions, nil
+	return merged, nil
 }
 
 func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntry, hasCached bool) ([]VersionEntry, error) {
@@ -374,6 +386,116 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 	}
 
 	return versions, nil
+}
+
+func (c *Client) fetchP2Dev(ctx context.Context, name string) []VersionEntry {
+	devKey := name + "~dev"
+
+	c.mu.RLock()
+	cached, hasCached := c.cache[devKey]
+	c.mu.RUnlock()
+
+	if hasCached {
+		if cached.notFound || len(cached.versions) > 0 {
+			return cached.versions
+		}
+	}
+
+	if !hasCached && c.metaCache != nil {
+		etag, body, ok, err := c.metaCache.LookupMetadata(c.baseURL, devKey)
+		if err == nil && ok {
+			var apiResp APIResponse
+			if jsonErr := json.Unmarshal(body, &apiResp); jsonErr == nil {
+				if versions, found := apiResp.Packages[name]; found {
+					cached = cacheEntry{etag: etag, versions: versions}
+					hasCached = true
+					c.mu.Lock()
+					c.cache[devKey] = cached
+					c.mu.Unlock()
+				}
+			}
+		}
+	}
+
+	url := fmt.Sprintf("%s/p2/%s~dev.json", c.baseURL, name)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	if hasCached && cached.etag != "" {
+		req.Header.Set("If-None-Match", cached.etag)
+	}
+	c.auth.ApplyRequest(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotModified && hasCached {
+		return cached.versions
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		c.mu.Lock()
+		c.cache[devKey] = cacheEntry{notFound: true}
+		c.mu.Unlock()
+		return nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var apiResp APIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil
+	}
+
+	versions, ok := apiResp.Packages[name]
+	if !ok {
+		return nil
+	}
+
+	etag := resp.Header.Get("ETag")
+	c.mu.Lock()
+	c.cache[devKey] = cacheEntry{etag: etag, versions: versions}
+	c.mu.Unlock()
+
+	if c.metaCache != nil {
+		_ = c.metaCache.InsertMetadata(c.baseURL, devKey, etag, body)
+	}
+
+	return versions
+}
+
+func mergeVersionEntries(stable, dev []VersionEntry) []VersionEntry {
+	if len(dev) == 0 {
+		return stable
+	}
+	seen := make(map[string]struct{}, len(stable)+len(dev))
+	merged := make([]VersionEntry, 0, len(stable)+len(dev))
+	for _, v := range stable {
+		if _, ok := seen[v.Version]; !ok {
+			seen[v.Version] = struct{}{}
+			merged = append(merged, v)
+		}
+	}
+	for _, v := range dev {
+		if _, ok := seen[v.Version]; !ok {
+			seen[v.Version] = struct{}{}
+			merged = append(merged, v)
+		}
+	}
+	return merged
 }
 
 func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([]VersionEntry, error) {

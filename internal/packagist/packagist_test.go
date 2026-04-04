@@ -109,6 +109,114 @@ func TestClientGetPackage(t *testing.T) {
 	}
 }
 
+func TestClientGetPackageMergesDevVersions(t *testing.T) {
+	stableResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/foo": {
+				{Name: "acme/foo", Version: "1.0.0", Type: "library"},
+				{Name: "acme/foo", Version: "2.0.0", Type: "library"},
+			},
+		},
+	}
+	stableData, _ := json.Marshal(stableResp)
+
+	devResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/foo": {
+				{Name: "acme/foo", Version: "dev-master", Type: "library"},
+				{Name: "acme/foo", Version: "dev-feature-x", Type: "library"},
+			},
+		},
+	}
+	devData, _ := json.Marshal(devResp)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			w.Header().Set("ETag", `"stable-1"`)
+			w.Write(stableData)
+		case "/p2/acme/foo~dev.json":
+			w.Header().Set("ETag", `"dev-1"`)
+			w.Write(devData)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+
+	if len(versions) != 4 {
+		t.Fatalf("got %d versions, want 4 (2 stable + 2 dev)", len(versions))
+	}
+
+	gotVersions := make(map[string]bool, len(versions))
+	for _, v := range versions {
+		gotVersions[v.Version] = true
+	}
+	for _, want := range []string{"1.0.0", "2.0.0", "dev-master", "dev-feature-x"} {
+		if !gotVersions[want] {
+			t.Errorf("missing version %q in merged result", want)
+		}
+	}
+
+	// Second call should be served from in-memory cache (no additional HTTP requests).
+	versions2, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("second GetPackage: %v", err)
+	}
+	if len(versions2) != 4 {
+		t.Fatalf("second call: got %d versions, want 4", len(versions2))
+	}
+}
+
+func TestClientGetPackageMergesDevVersionsDeduplicates(t *testing.T) {
+	stableResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/foo": {
+				{Name: "acme/foo", Version: "1.0.0", Type: "library"},
+			},
+		},
+	}
+	stableData, _ := json.Marshal(stableResp)
+
+	devResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/foo": {
+				{Name: "acme/foo", Version: "1.0.0", Type: "library", Dist: packagist.DistEntry{URL: "dev-dist"}},
+				{Name: "acme/foo", Version: "dev-main", Type: "library"},
+			},
+		},
+	}
+	devData, _ := json.Marshal(devResp)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			w.Write(stableData)
+		case "/p2/acme/foo~dev.json":
+			w.Write(devData)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2 (deduped 1.0.0)", len(versions))
+	}
+}
+
 func TestClientGetPackageObjectShapedP2Response(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/p2/urbanheroes-symfony/uh-enhanced-security-bundle.json" {
@@ -215,11 +323,11 @@ func TestClientETagCaching(t *testing.T) {
 	if len(v1) != 3 {
 		t.Fatalf("first: got %d versions, want 3", len(v1))
 	}
-	if requestCount != 1 {
-		t.Fatalf("expected 1 request, got %d", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests, got %d", requestCount)
 	}
 
-	// Second request — should send If-None-Match, get 304, use cache.
+	// Second request — should return from in-memory cache (devMerged), no HTTP.
 	v2, err := client.GetPackage(context.Background(), "acme/foo")
 	if err != nil {
 		t.Fatalf("second GetPackage: %v", err)
@@ -228,7 +336,7 @@ func TestClientETagCaching(t *testing.T) {
 		t.Fatalf("second: got %d versions, want 3", len(v2))
 	}
 	if requestCount != 2 {
-		t.Fatalf("expected 2 requests, got %d", requestCount)
+		t.Fatalf("expected 2 requests after cache hit, got %d", requestCount)
 	}
 }
 
@@ -515,8 +623,8 @@ func TestPersistentMetadataCacheETagRoundTrip(t *testing.T) {
 	if len(versions) != 3 {
 		t.Fatalf("first: got %d versions, want 3", len(versions))
 	}
-	if requestCount != 1 {
-		t.Fatalf("expected 1 request after first call, got %d", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected 2 requests after first call, got %d", requestCount)
 	}
 	if lastIfNoneMatch != "" {
 		t.Fatalf("first request should not send If-None-Match, got %q", lastIfNoneMatch)
@@ -534,8 +642,8 @@ func TestPersistentMetadataCacheETagRoundTrip(t *testing.T) {
 	if len(versions2) != 3 {
 		t.Fatalf("second: got %d versions, want 3", len(versions2))
 	}
-	if requestCount != 2 {
-		t.Fatalf("expected 2 requests after second call, got %d", requestCount)
+	if requestCount != 4 {
+		t.Fatalf("expected 4 requests after second call, got %d", requestCount)
 	}
 	if lastIfNoneMatch != `"etag-persistent"` {
 		t.Fatalf("second request should send If-None-Match=%q, got %q", `"etag-persistent"`, lastIfNoneMatch)
@@ -577,8 +685,8 @@ func TestPersistentMetadataCacheIgnoresCorruptBody(t *testing.T) {
 	if len(versions) != 3 {
 		t.Fatalf("got %d versions, want 3", len(versions))
 	}
-	if requestCount != 1 {
-		t.Fatalf("expected 1 HTTP request, got %d", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected 2 HTTP requests, got %d", requestCount)
 	}
 }
 
