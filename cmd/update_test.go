@@ -68,3 +68,23 @@ func TestResolveRestrictedPackagesNoSymfonyRequirement(t *testing.T) {
 		t.Fatalf("restriction = %q, want empty", restriction)
 	}
 }
+
+func TestFormatPackageList(t *testing.T) {
+	tests := []struct {
+		packages []string
+		want     string
+	}{
+		{[]string{"a"}, "a"},
+		{[]string{"a", "b", "c"}, "a, b, c"},
+		{[]string{"a", "b", "c", "d", "e"}, "a, b, c, d, e"},
+		{[]string{"a", "b", "c", "d", "e", "f"}, "a, b, c, d, e and 1 more"},
+		{[]string{"a", "b", "c", "d", "e", "f", "g", "h"}, "a, b, c, d, e and 3 more"},
+	}
+
+	for _, tt := range tests {
+		got := formatPackageList(tt.packages)
+		if got != tt.want {
+			t.Errorf("formatPackageList(%v) = %q, want %q", tt.packages, got, tt.want)
+		}
+	}
+}
