@@ -17,6 +17,7 @@ import (
 	"github.com/van-sprundel/vif/internal/installer"
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/platform"
 	"github.com/van-sprundel/vif/internal/ui"
 )
 
@@ -61,6 +62,10 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 	var cj *composer.ComposerJSON
 	if parsed, err := composer.Parse("composer.json"); err == nil {
 		cj = parsed
+
+		if !lf.IsFresh(cj) {
+			fmt.Fprintf(w, "Warning: The lock file is not up to date with the latest changes in composer.json. Run `vif update` to update it.\n")
+		}
 		optimized = cj.Config.OptimizeAutoloader
 		prependAutoloader = cj.Config.PrependAutoloaderOrDefault()
 		if !cj.Config.PlatformCheck.IsTrue() {
@@ -100,6 +105,17 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 		}
 	}
 	allPackages = promoteSourceToDist(allPackages, projectDir)
+
+	if pf, err := platform.Detect(); err == nil {
+		if errs := platform.VerifyPackages(pf, allPackages); len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(w, "  - %s\n", e)
+			}
+			return fmt.Errorf("your lock file cannot be installed on this system (%d platform requirement errors)", len(errs))
+		}
+	} else {
+		fmt.Fprintf(w, "Warning: could not detect PHP platform, skipping platform verification: %v\n", err)
+	}
 
 	prodCount := len(packages)
 	packages = allPackages[:prodCount]

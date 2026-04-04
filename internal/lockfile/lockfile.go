@@ -54,6 +54,16 @@ type lockPkgEntry struct {
 	Time        string               `json:"time,omitempty"`
 }
 
+// IsFresh returns true if the lockfile's content-hash matches the computed
+// hash from the given ComposerJSON. Returns true if either hash is empty
+// (i.e. cannot determine staleness).
+func (lf *LockFile) IsFresh(cj *composer.ComposerJSON) bool {
+	if lf.ContentHash == "" {
+		return true
+	}
+	return lf.ContentHash == cj.ContentHash()
+}
+
 // Parse reads the composer.lock file at path and returns a parsed LockFile.
 // Errors are wrapped with context.
 func Parse(path string) (*LockFile, error) {
