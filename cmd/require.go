@@ -13,6 +13,7 @@ import (
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/resolver"
 	"github.com/van-sprundel/vif/internal/ui"
+	versionPkg "github.com/van-sprundel/vif/internal/version"
 )
 
 // newRequireCmd returns the `vif require` command.
@@ -44,21 +45,20 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 	start := time.Now()
 	w := os.Stderr
 
-	// 1. Parse composer.json.
 	composerPath := "composer.json"
 	cj, err := composer.Parse(composerPath)
 	if err != nil {
 		return fmt.Errorf("failed to read composer.json: %w", err)
 	}
 
-	// 2. Parse arguments and add to composer.json.
+	guessedConstraints := make(map[string]string)
+
 	for _, arg := range args {
 		name, constraint := parseRequireArg(arg)
 
-		// If no constraint given, default to latest via "*" — the resolver
-		// will pick the highest stable version.
 		if constraint == "" {
 			constraint = "*"
+			guessedConstraints[name] = ""
 		}
 
 		if dev {
@@ -70,12 +70,10 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 		fmt.Fprintf(w, "Adding %s %s\n", name, constraint)
 	}
 
-	// 3. Write updated composer.json.
 	if err := cj.Write(composerPath); err != nil {
 		return fmt.Errorf("write composer.json: %w", err)
 	}
 
-	// 4. Open the persistent cache (shared with install phase).
 	cacheDir, err := cacheDirectory()
 	if err != nil {
 		return fmt.Errorf("cache directory: %w", err)
@@ -86,7 +84,6 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 	}
 	defer c.Close()
 
-	// 5. Resolve dependencies.
 	fmt.Fprintf(w, "Resolving dependencies...\n")
 	client, err := metadataClient(cj, c)
 	if err != nil {
@@ -103,13 +100,39 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 
 	fmt.Fprintf(w, "Resolved %d packages\n", len(resolved))
 
-	// 6. Run install pipeline first so lockfile updates are atomic:
-	// if install fails, we keep the previous composer.lock unchanged.
+	if len(guessedConstraints) > 0 {
+		updated := false
+		for i := range resolved {
+			rp := &resolved[i]
+			if _, ok := guessedConstraints[rp.Name]; ok {
+				guessed := recommendedConstraint(rp.Version)
+				if guessed != "" && guessed != "*" {
+					if dev {
+						cj.AddRequireDev(rp.Name, guessed)
+					} else {
+						cj.AddRequire(rp.Name, guessed)
+					}
+					guessedConstraints[rp.Name] = guessed
+					updated = true
+				}
+			}
+		}
+		if updated {
+			if err := cj.Write(composerPath); err != nil {
+				return fmt.Errorf("write composer.json: %w", err)
+			}
+			for name, c := range guessedConstraints {
+				if c != "" {
+					fmt.Fprintf(w, "  Using version %s for %s\n", c, name)
+				}
+			}
+		}
+	}
+
 	if err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c); err != nil {
 		return err
 	}
 
-	// 7. Write composer.lock after a successful install.
 	lockPath := "composer.lock"
 	if err := lockfile.Generate(lockPath, resolved, cj); err != nil {
 		return fmt.Errorf("write lockfile: %w", err)
@@ -119,6 +142,17 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 	ui.PrintSummary(w, len(resolved), start)
 
 	return nil
+}
+
+func recommendedConstraint(ver string) string {
+	v, err := versionPkg.Parse(ver)
+	if err != nil {
+		return "*"
+	}
+	if v.Dev || v.Major == 0 {
+		return "*"
+	}
+	return fmt.Sprintf("^%d.%d", v.Major, v.Minor)
 }
 
 // parseRequireArg splits "vendor/package:^1.0" into name and constraint.
