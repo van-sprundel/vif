@@ -622,6 +622,56 @@ func TestGenerateNoHTMLEscape(t *testing.T) {
 	}
 }
 
+func TestIsFresh(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentHash string
+		jsonContent string
+		want        bool
+	}{
+		{
+			name:        "empty content hash is always fresh",
+			contentHash: "",
+			jsonContent: `{"name":"acme/app","require":{"acme/log":"^1.0"}}`,
+			want:        true,
+		},
+		{
+			name:        "matching hash",
+			contentHash: "test-matches",
+			jsonContent: `{"name":"acme/app","require":{"acme/log":"^1.0"}}`,
+			want:        true,
+		},
+		{
+			name:        "mismatched hash",
+			contentHash: "old-hash",
+			jsonContent: `{"name":"acme/app","require":{"acme/log":"^2.0"}}`,
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cjPath := filepath.Join(dir, "composer.json")
+			if err := os.WriteFile(cjPath, []byte(tt.jsonContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cj, err := composer.Parse(cjPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lf := &lockfile.LockFile{ContentHash: tt.contentHash}
+			if tt.want && tt.contentHash != "" {
+				lf.ContentHash = cj.ContentHash()
+			}
+			got := lf.IsFresh(cj)
+			if got != tt.want {
+				t.Errorf("IsFresh() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func BenchmarkParse(b *testing.B) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
