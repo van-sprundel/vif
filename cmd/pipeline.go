@@ -142,7 +142,7 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
-	if err := inst.Install(prodPkgs, devPkgs, vendorDir, rootMeta); err != nil {
+	if _, err := inst.Install(prodPkgs, devPkgs, vendorDir, rootMeta); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
 

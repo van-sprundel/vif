@@ -100,7 +100,7 @@ func TestInstallCreatesVendorLayout(t *testing.T) {
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestInstallUsesHardlinks(t *testing.T) {
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -160,12 +160,12 @@ func TestInstallRemovesStalePackages(t *testing.T) {
 
 	// First install with both packages.
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install 1: %v", err)
 	}
 
 	// Second install with only the first package — bar should be removed.
-	if err := inst.Install(packages[:1], nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages[:1], nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install 2: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestInstallWritesInstalledJSON(t *testing.T) {
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, devPackages, vendorDir, &installer.RootPackage{Name: "acme/demo"}); err != nil {
+	if _, err := inst.Install(packages, devPackages, vendorDir, &installer.RootPackage{Name: "acme/demo"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestInstallWritesPHPBinProxy(t *testing.T) {
 
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestInstallWritesShellBinProxy(t *testing.T) {
 
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -365,7 +365,7 @@ func TestInstallEmptyPackageList(t *testing.T) {
 	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
 
 	inst := installer.New(c)
-	if err := inst.Install(nil, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(nil, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestInstallSkipsSourceOnlyPackage(t *testing.T) {
 	}
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -431,12 +431,89 @@ func TestInstallPathPackageFromLocalDirectory(t *testing.T) {
 	}
 
 	inst := installer.New(c)
-	if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(vendorDir, "urbanheroes-sf", "asset", "src", "Asset.php")); err != nil {
 		t.Fatalf("path package file missing after install: %v", err)
+	}
+}
+
+func TestInstallIncremental(t *testing.T) {
+	packages := testPackages()
+	c, _ := setupCache(t, packages)
+	defer c.Close()
+
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
+
+	inst := installer.New(c)
+
+	stats, err := inst.Install(packages, nil, vendorDir, nil)
+	if err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if stats.Installed != len(packages) {
+		t.Errorf("first install: got %d installed, want %d", stats.Installed, len(packages))
+	}
+	if stats.Skipped != 0 {
+		t.Errorf("first install: got %d skipped, want 0", stats.Skipped)
+	}
+
+	stats, err = inst.Install(packages, nil, vendorDir, nil)
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if stats.Installed != 0 {
+		t.Errorf("second install: got %d installed, want 0", stats.Installed)
+	}
+	if stats.Skipped != len(packages) {
+		t.Errorf("second install: got %d skipped, want %d", stats.Skipped, len(packages))
+	}
+}
+
+func TestInstallIncrementalVersionChange(t *testing.T) {
+	packages := testPackages()
+	c, _ := setupCache(t, packages)
+	defer c.Close()
+
+	vendorDir := filepath.Join(testhelper.TempDir(t, "vendor"), "vendor")
+
+	inst := installer.New(c)
+
+	if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	updatedPkg := packages[0]
+	updatedPkg.Version = "2.0.0"
+	updatedPkg.VersionNormalized = "2.0.0.0"
+	setupCacheWithVersion(t, c, updatedPkg)
+
+	stats, err := inst.Install([]pkg.Package{updatedPkg}, nil, vendorDir, nil)
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if stats.Updated != 1 {
+		t.Errorf("second install: got %d updated, want 1", stats.Updated)
+	}
+}
+
+func setupCacheWithVersion(t *testing.T, c *cache.Cache, p pkg.Package) {
+	t.Helper()
+	key := cache.CacheKey(p.Dist.URL)
+	extractedDir := c.ExtractedDir(key)
+	if err := os.MkdirAll(filepath.Join(extractedDir, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extractedDir, "src", "Foo.php"), []byte("<?php class Foo {}"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extractedDir, "composer.json"), []byte(`{"name":"`+p.Name+`"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := c.Insert(p.Name, p.Version, p.Dist.URL, p.Dist.Reference, key); err != nil {
+		t.Fatalf("cache.Insert: %v", err)
 	}
 }
 
@@ -483,7 +560,7 @@ func BenchmarkInstall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		vendorDir := filepath.Join(testhelper.TempDir(b, "vendor"), "vendor")
-		if err := inst.Install(packages, nil, vendorDir, nil); err != nil {
+		if _, err := inst.Install(packages, nil, vendorDir, nil); err != nil {
 			b.Fatalf("Install: %v", err)
 		}
 	}

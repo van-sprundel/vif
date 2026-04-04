@@ -57,25 +57,32 @@ func (inst *Installer) SetWorkers(n int) {
 // Install links all packages from cache into vendorDir, removes stale packages,
 // and writes vendor/composer/installed.json.
 // packages are the production dependencies, devPackages are the dev dependencies.
-func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir string, root *RootPackage) error {
+// Returns stats with counts of installs, updates, removals, and skips.
+func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir string, root *RootPackage) (InstallStats, error) {
 	all := append(packages, devPackages...)
 
-	// Build set of expected package names for stale detection.
 	expected := make(map[string]struct{}, len(all))
 	for _, p := range all {
 		expected[p.Name] = struct{}{}
 	}
 
-	// Remove stale packages.
-	if err := removeStale(vendorDir, expected); err != nil {
-		return fmt.Errorf("remove stale: %w", err)
-	}
+	installed := readInstalledVersions(vendorDir)
 
-	// Build jobs for parallel installation.
-	jobs := make([]installJob, 0, len(all))
+	var toInstall []installJob
+	var toRemove []string
+	stats := InstallStats{}
+
 	for _, p := range all {
-		var src string
+		dst := filepath.Join(vendorDir, p.Name)
 
+		if installedVer, ok := installed[p.Name]; ok && installedVer == p.Version {
+			if _, statErr := os.Stat(dst); statErr == nil {
+				stats.Skipped++
+				continue
+			}
+		}
+
+		var src string
 		if p.Dist.Type == "path" && strings.TrimSpace(p.Dist.URL) != "" {
 			src = p.Dist.URL
 		} else if pkg.RequiresGitClone(p) {
@@ -88,29 +95,115 @@ func (inst *Installer) Install(packages, devPackages []pkg.Package, vendorDir st
 			continue
 		}
 
-		jobs = append(jobs, installJob{
+		toInstall = append(toInstall, installJob{
 			pkg: p,
 			src: src,
-			dst: filepath.Join(vendorDir, p.Name),
+			dst: dst,
 		})
+
+		if _, existed := installed[p.Name]; existed {
+			stats.Updated++
+		} else {
+			stats.Installed++
+		}
 	}
 
-	// Install packages in parallel.
-	if err := inst.installParallel(jobs); err != nil {
-		return err
+	for name := range installed {
+		if _, ok := expected[name]; !ok {
+			toRemove = append(toRemove, filepath.Join(vendorDir, name))
+			stats.Removed++
+		}
 	}
 
-	// Create vendor/bin/ proxies.
+	for _, dir := range toRemove {
+		os.RemoveAll(dir)
+	}
+
+	cleanEmptyVendorDirs(vendorDir, expected)
+
+	if err := inst.installParallel(toInstall); err != nil {
+		return stats, err
+	}
+
 	if err := installBinaries(vendorDir, all); err != nil {
-		return fmt.Errorf("install binaries: %w", err)
+		return stats, fmt.Errorf("install binaries: %w", err)
 	}
 
-	// Write installed.json.
 	if err := writeInstalledMetadata(vendorDir, packages, devPackages, root); err != nil {
-		return fmt.Errorf("write installed metadata: %w", err)
+		return stats, fmt.Errorf("write installed metadata: %w", err)
 	}
 
-	return nil
+	return stats, nil
+}
+
+// InstallStats returns counts from the last install operation for reporting.
+type InstallStats struct {
+	Installed int
+	Updated   int
+	Removed   int
+	Skipped   int
+}
+
+// readInstalledVersions reads vendor/composer/installed.json and returns
+// a map of package name -> version for currently installed packages.
+func readInstalledVersions(vendorDir string) map[string]string {
+	result := make(map[string]string)
+
+	data, err := os.ReadFile(filepath.Join(vendorDir, "composer", "installed.json"))
+	if err != nil {
+		return result
+	}
+
+	var ij installedJSON
+	if err := json.Unmarshal(data, &ij); err != nil {
+		return result
+	}
+
+	for _, p := range ij.Packages {
+		result[p.Name] = p.Version
+	}
+
+	return result
+}
+
+// cleanEmptyVendorDirs removes empty org directories under vendor/
+// that have no remaining package subdirectories in the expected set.
+func cleanEmptyVendorDirs(vendorDir string, expected map[string]struct{}) {
+	entries, err := os.ReadDir(vendorDir)
+	if err != nil {
+		return
+	}
+
+	for _, org := range entries {
+		if !org.IsDir() || org.Name() == "composer" || org.Name() == "bin" {
+			continue
+		}
+
+		orgPath := filepath.Join(vendorDir, org.Name())
+		pkgEntries, err := os.ReadDir(orgPath)
+		if err != nil {
+			continue
+		}
+
+		hasPackages := false
+		for _, p := range pkgEntries {
+			if !p.IsDir() {
+				continue
+			}
+			name := org.Name() + "/" + p.Name()
+			if _, ok := expected[name]; ok {
+				hasPackages = true
+				break
+			}
+		}
+
+		if !hasPackages {
+			remaining, _ := os.ReadDir(orgPath)
+			if len(remaining) == 0 {
+				os.Remove(orgPath)
+			}
+		}
+	}
 }
 
 // installParallel links packages from cache to vendor using a worker pool.
@@ -206,51 +299,6 @@ func copyFile(src, dst string) error {
 
 	_, err = io.Copy(out, in)
 	return err
-}
-
-// removeStale removes package directories from vendor/ that are not in the expected set.
-// It walks one or two levels deep (vendor/<org>/<name>) to find package directories.
-func removeStale(vendorDir string, expected map[string]struct{}) error {
-	// Walk vendor/ looking for package dirs (two levels: vendor/<org>/<pkg>).
-	entries, err := os.ReadDir(vendorDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	for _, org := range entries {
-		if !org.IsDir() || org.Name() == "composer" {
-			continue
-		}
-
-		orgPath := filepath.Join(vendorDir, org.Name())
-		pkgEntries, err := os.ReadDir(orgPath)
-		if err != nil {
-			return err
-		}
-
-		for _, p := range pkgEntries {
-			if !p.IsDir() {
-				continue
-			}
-			name := org.Name() + "/" + p.Name()
-			if _, ok := expected[name]; !ok {
-				if err := os.RemoveAll(filepath.Join(orgPath, p.Name())); err != nil {
-					return fmt.Errorf("remove stale %s: %w", name, err)
-				}
-			}
-		}
-
-		// Remove empty org directory.
-		remaining, _ := os.ReadDir(orgPath)
-		if len(remaining) == 0 {
-			os.Remove(orgPath)
-		}
-	}
-
-	return nil
 }
 
 var phpProxyRe = regexp.MustCompile(`(?s)^(#!.*\r?\n)?[\r\n\t ]*<\?php`)
