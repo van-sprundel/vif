@@ -183,7 +183,7 @@ func TestE2EInstall(t *testing.T) {
 	// Install.
 	vendorDir := filepath.Join(projectDir, "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
+	if _, err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -350,7 +350,7 @@ func runFullInstall(tb testing.TB, project testProject, serverURL string) string
 
 	vendorDir := filepath.Join(projectDir, "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
+	if _, err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
 		tb.Fatalf("install: %v", err)
 	}
 
@@ -388,7 +388,7 @@ func runFullInstallWithCache(tb testing.TB, project testProject, serverURL, cach
 
 	vendorDir := filepath.Join(projectDir, "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
+	if _, err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
 		tb.Fatalf("install: %v", err)
 	}
 
@@ -512,7 +512,7 @@ func BenchmarkVifInstallWarm(b *testing.B) {
 
 		vendorDir := filepath.Join(projectDir, "vendor")
 		inst := installer.New(c)
-		if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
+		if _, err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, nil); err != nil {
 			b.Fatalf("install: %v", err)
 		}
 

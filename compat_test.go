@@ -277,7 +277,7 @@ func runVifInstall(t *testing.T, dir, cacheDir string) (string, error) {
 
 	vendorDir := filepath.Join(dir, "vendor")
 	inst := installer.New(c)
-	if err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, root); err != nil {
+	if _, err := inst.Install(lf.Packages, lf.PackagesDev, vendorDir, root); err != nil {
 		return "", fmt.Errorf("install: %w", err)
 	}
 

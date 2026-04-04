@@ -208,8 +208,14 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) 
 	inst := installer.New(c)
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
-	if err := inst.Install(packages, packagesDev, vendorDir, rootMeta); err != nil {
+	instStats, err := inst.Install(packages, packagesDev, vendorDir, rootMeta)
+	if err != nil {
 		return fmt.Errorf("install: %w", err)
+	}
+	if instStats.Skipped > 0 {
+		fmt.Fprintf(w, "  %d installed, %d updated, %d removed, %d unchanged\n", instStats.Installed, instStats.Updated, instStats.Removed, instStats.Skipped)
+	} else {
+		fmt.Fprintf(w, "  %d installed, %d updated, %d removed\n", instStats.Installed, instStats.Updated, instStats.Removed)
 	}
 
 	// 5. Generate autoloader.
