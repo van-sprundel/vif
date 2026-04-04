@@ -26,24 +26,26 @@ func newInstallCmd() *cobra.Command {
 	var verbose bool
 	var noDev bool
 	var noAutoloader bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:          "install",
 		Short:        "Install packages from composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(cmd.Context(), verbose, noDev, noAutoloader)
+			return runInstall(cmd.Context(), verbose, noDev, noAutoloader, dryRun)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "simulate without installing")
 
 	return cmd
 }
 
-func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
+func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -125,6 +127,11 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader bool) error {
 		fmt.Fprintf(w, "Found %d packages (prod only, --no-dev)\n", total)
 	} else {
 		fmt.Fprintf(w, "Found %d packages (%d prod, %d dev)\n", total, len(packages), len(packagesDev))
+	}
+
+	if dryRun {
+		fmt.Fprintln(w, "Dry run — nothing installed.")
+		return nil
 	}
 
 	// 2. Init cache.
