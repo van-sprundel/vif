@@ -203,16 +203,21 @@ func parseCaret(s string) ([]bound, error) {
 		return nil, fmt.Errorf("constraint: caret: %w", err)
 	}
 
+	segments := strings.Count(strings.TrimPrefix(strings.TrimPrefix(s, "v"), "V"), ".") + 1
+
 	upper := Version{Stability: Stable}
 	if v.Major != 0 {
 		upper.Major = v.Major + 1
+	} else if segments == 1 {
+		upper.Major = 1
 	} else if v.Minor != 0 {
 		upper.Minor = v.Minor + 1
+	} else if segments == 2 {
+		upper.Minor = 1
 	} else {
 		upper.Patch = v.Patch + 1
 	}
 
-	// Lower bound uses the parsed version with stable floor.
 	lower := v
 	lower.Stability = v.Stability
 	lower.StabilityNum = v.StabilityNum
