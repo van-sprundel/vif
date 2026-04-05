@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
 	"github.com/van-sprundel/vif/internal/ui"
 	versionPkg "github.com/van-sprundel/vif/internal/version"
@@ -89,8 +91,56 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 	if err != nil {
 		return err
 	}
+	var (
+		lockedEntries map[string]packagist.VersionEntry
+		locked        map[string]string
+		fixed         map[string]string
+	)
+	if existingLock, err := lockfile.Parse("composer.lock"); err == nil {
+		lockedEntries = existingLock.LockedEntries()
+		locked = make(map[string]string, len(existingLock.Packages)+len(existingLock.PackagesDev))
+		fixed = make(map[string]string, len(existingLock.Packages)+len(existingLock.PackagesDev))
+		for _, p := range existingLock.Packages {
+			locked[p.Name] = p.Version
+			fixed[p.Name] = p.Version
+		}
+		for _, p := range existingLock.PackagesDev {
+			locked[p.Name] = p.Version
+			fixed[p.Name] = p.Version
+		}
+		for _, arg := range args {
+			name, _ := parseRequireArg(arg)
+			delete(locked, name)
+			delete(fixed, name)
+		}
+	}
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
-	resolved, err := resolver.ResolveWithProgress(ctx, cj, client, func(name string) {
+	var (
+		solveMu      sync.Mutex
+		solveLast    time.Time
+		solveCounter int
+	)
+	onSolveProgress := func(name string) {
+		if !verbose {
+			return
+		}
+		solveMu.Lock()
+		solveCounter++
+		emit := solveCounter%50000 == 0 || time.Since(solveLast) >= 10*time.Second
+		if emit {
+			solveLast = time.Now()
+		}
+		solveMu.Unlock()
+		if emit {
+			progress.Error(fmt.Sprintf("  Solving... last=%s states=%d", name, solveCounter))
+		}
+	}
+	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
+		Fixed:         fixed,
+		LockedEntries: lockedEntries,
+		Locked:        locked,
+		SolveProgress: onSolveProgress,
+	}, func(name string) {
 		progress.Increment(name)
 	})
 	progress.Finish()

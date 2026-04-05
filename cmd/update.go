@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -53,10 +55,18 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 
 	var lockedEntries map[string]packagist.VersionEntry
 	var locked map[string]string
+	var fixed map[string]string
 	lockfileDuration := time.Duration(0)
 	lockfileReadStart := time.Now()
 	if existingLock, err := lockfile.Parse("composer.lock"); err == nil {
 		lockedEntries = existingLock.LockedEntries()
+		fixed = make(map[string]string, len(existingLock.Packages)+len(existingLock.PackagesDev))
+		for _, p := range existingLock.Packages {
+			fixed[p.Name] = p.Version
+		}
+		for _, p := range existingLock.PackagesDev {
+			fixed[p.Name] = p.Version
+		}
 
 		if len(packages) > 0 {
 			updateSet := make(map[string]struct{}, len(packages))
@@ -68,13 +78,22 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 			for _, p := range existingLock.Packages {
 				if _, ok := updateSet[p.Name]; !ok {
 					locked[p.Name] = p.Version
+					fixed[p.Name] = p.Version
+				} else {
+					delete(fixed, p.Name)
 				}
 			}
 			for _, p := range existingLock.PackagesDev {
 				if _, ok := updateSet[p.Name]; !ok {
 					locked[p.Name] = p.Version
+					fixed[p.Name] = p.Version
+				} else {
+					delete(fixed, p.Name)
 				}
 			}
+		} else {
+			// Full update should not pin to existing lock versions.
+			fixed = nil
 		}
 	} else if len(packages) > 0 {
 		return fmt.Errorf("cannot partially update without an existing composer.lock")
@@ -112,12 +131,49 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	}
 
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
+	var (
+		solveMu      sync.Mutex
+		solveLast    time.Time
+		solveCounter int
+	)
+	onSolveProgress := func(name string) {
+		if !profile {
+			return
+		}
+		solveMu.Lock()
+		solveCounter++
+		emit := solveCounter%50000 == 0 || time.Since(solveLast) >= 10*time.Second
+		if emit {
+			solveLast = time.Now()
+		}
+		solveMu.Unlock()
+		if emit {
+			progress.Error(fmt.Sprintf("  Solving... last=%s states=%d", name, solveCounter))
+		}
+	}
+	var resolveLookups []ui.ProfilePackage
+	var resolveLookupsMu sync.Mutex
+	onLookupDone := func(name string, d time.Duration, err error) {
+		if !profile {
+			return
+		}
+		displayName := name
+		if err != nil {
+			displayName = fmt.Sprintf("%s (error)", name)
+		}
+		resolveLookupsMu.Lock()
+		resolveLookups = append(resolveLookups, ui.ProfilePackage{Name: displayName, Duration: d})
+		resolveLookupsMu.Unlock()
+	}
 	resolveStart := time.Now()
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
+		Fixed:              fixed,
 		RestrictedPackages: restrictedPackages,
 		Restriction:        restriction,
 		LockedEntries:      lockedEntries,
 		Locked:             locked,
+		LookupDone:         onLookupDone,
+		SolveProgress:      onSolveProgress,
 	}, func(name string) {
 		progress.Increment(name)
 	})
@@ -165,6 +221,21 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 			slowPackages = installProfile.SlowPackages
 		}
 		ui.PrintProfile(w, time.Since(start), sections, slowPackages)
+		if len(resolveLookups) > 0 {
+			sort.Slice(resolveLookups, func(i, j int) bool {
+				if resolveLookups[i].Duration == resolveLookups[j].Duration {
+					return resolveLookups[i].Name < resolveLookups[j].Name
+				}
+				return resolveLookups[i].Duration > resolveLookups[j].Duration
+			})
+			if len(resolveLookups) > 8 {
+				resolveLookups = resolveLookups[:8]
+			}
+			fmt.Fprintln(w, "  slowest metadata lookups:")
+			for i, lookup := range resolveLookups {
+				fmt.Fprintf(w, "    %d. %s (%s)\n", i+1, lookup.Name, profileDuration(lookup.Duration))
+			}
+		}
 	}
 
 	return nil
@@ -175,6 +246,13 @@ func formatPackageList(packages []string) string {
 		return strings.Join(packages, ", ")
 	}
 	return strings.Join(packages[:5], ", ") + fmt.Sprintf(" and %d more", len(packages)-5)
+}
+
+func profileDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.2fs", d.Seconds())
 }
 
 func resolveRestrictedPackages(ctx context.Context, client packagist.Fetcher, cj *composer.ComposerJSON) (map[string]struct{}, string, error) {

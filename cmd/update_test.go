@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/packagist"
@@ -97,5 +98,23 @@ func TestNewUpdateCmdProfileFlag(t *testing.T) {
 	}
 	if got, want := flag.Usage, "print per-phase timings and slowest packages"; got != want {
 		t.Fatalf("profile flag usage = %q, want %q", got, want)
+	}
+}
+
+func TestProfileDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want string
+	}{
+		{name: "milliseconds", in: 500 * time.Millisecond, want: "500ms"},
+		{name: "seconds", in: 1500 * time.Millisecond, want: "1.50s"},
+	}
+
+	for _, tt := range tests {
+		got := profileDuration(tt.in)
+		if got != tt.want {
+			t.Fatalf("%s: profileDuration(%s) = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
 	}
 }

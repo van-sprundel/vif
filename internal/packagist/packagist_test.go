@@ -510,6 +510,42 @@ func TestClientIgnoresEmptyArrayRootPackages(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotFallbackToIncludesWhenMetadataURLPresent(t *testing.T) {
+	var rootRequests int
+	var includeRequests int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			http.NotFound(w, r)
+		case "/packages.json":
+			rootRequests++
+			_, _ = w.Write([]byte(`{"metadata-url":"/p2/%package%.json","includes":{"include/all$abc.json":{"sha1":"abc"}}}`))
+		case "/include/all$abc.json":
+			includeRequests++
+			_, _ = w.Write([]byte(`{"packages":{"acme/foo":{"1.0.0":{"name":"acme/foo","version":"1.0.0"}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	_, err := client.GetPackage(context.Background(), "acme/foo")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if !strings.Contains(err.Error(), "package not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rootRequests != 1 {
+		t.Fatalf("rootRequests = %d, want 1", rootRequests)
+	}
+	if includeRequests != 0 {
+		t.Fatalf("includeRequests = %d, want 0", includeRequests)
+	}
+}
+
 func TestChainFallsBackAcrossRepositories(t *testing.T) {
 	privateResp := packagist.APIResponse{
 		Packages: map[string][]packagist.VersionEntry{

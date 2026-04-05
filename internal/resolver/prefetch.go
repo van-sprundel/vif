@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/version"
@@ -29,7 +30,7 @@ type prefetchResult struct {
 // (N is prefetchDependencyScanVersionLimit). Scanning all versions can explode
 // on large ecosystems and dominate update time. Missing transitive packages are
 // still safe: the solver falls back to on-demand fetches on cache misses.
-func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames []string, progress func(string)) map[string]prefetchResult {
+func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames []string, progress func(string), lookupDone func(string, time.Duration, error)) map[string]prefetchResult {
 	results := make(map[string]prefetchResult)
 	var mu sync.Mutex
 	queued := make(map[string]bool, len(rootNames)*4)
@@ -71,7 +72,11 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 				if progress != nil {
 					progress(name)
 				}
+				start := time.Now()
 				versions, err := client.GetPackage(ctx, name)
+				if lookupDone != nil {
+					lookupDone(name, time.Since(start), err)
+				}
 
 				mu.Lock()
 				results[name] = prefetchResult{versions: versions, err: err}
@@ -150,7 +155,12 @@ func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[s
 			if err != nil {
 				continue
 			}
-			candidates = append(candidates, candidate{entry: entry, version: v})
+			candidates = append(candidates, candidate{
+				entry:        entry,
+				version:      v,
+				dependencies: parseDependencyRequirements(entry),
+				conflicts:    parseConflictRequirements(entry),
+			})
 		}
 		// Sort descending by version (highest first), matching getCandidates order.
 		sortCandidates(candidates, preferStable)
@@ -189,7 +199,12 @@ func injectLockedEntries(cache map[string]candidateCacheEntry, prefetched map[st
 		}
 
 		// Inject the locked entry as the only candidate.
-		candidates := []candidate{{entry: entry, version: v}}
+		candidates := []candidate{{
+			entry:        entry,
+			version:      v,
+			dependencies: parseDependencyRequirements(entry),
+			conflicts:    parseConflictRequirements(entry),
+		}}
 		sortCandidates(candidates, preferStable)
 		cache[name] = candidateCacheEntry{candidates: candidates}
 	}
