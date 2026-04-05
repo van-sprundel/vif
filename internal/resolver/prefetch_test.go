@@ -148,6 +148,29 @@ func TestPrefetchMetadataHandlesNotFound(t *testing.T) {
 	}
 }
 
+func TestPrefetchMetadataBoundsDependencyScanToRecentVersions(t *testing.T) {
+	oldLimit := prefetchDependencyScanVersionLimit
+	prefetchDependencyScanVersionLimit = 2
+	defer func() { prefetchDependencyScanVersionLimit = oldLimit }()
+
+	client := newMockFetcher()
+	// Newest two versions depend on acme/recent. Older versions depend on acme/old.
+	client.add("acme/root", "3.0.0", map[string]string{"acme/recent": "^1.0"})
+	client.add("acme/root", "2.0.0", map[string]string{"acme/recent": "^1.0"})
+	client.add("acme/root", "1.0.0", map[string]string{"acme/old": "^1.0"})
+	client.add("acme/recent", "1.0.0", nil)
+	client.add("acme/old", "1.0.0", nil)
+
+	results := prefetchMetadata(context.Background(), client, []string{"acme/root"}, nil)
+
+	if _, ok := results["acme/recent"]; !ok {
+		t.Fatal("expected acme/recent to be prefetched")
+	}
+	if _, ok := results["acme/old"]; ok {
+		t.Fatal("did not expect acme/old to be prefetched from versions beyond scan limit")
+	}
+}
+
 // TestPrefetchMetadataContextCancellation verifies that prefetch terminates
 // promptly when the context is cancelled.
 func TestPrefetchMetadataContextCancellation(t *testing.T) {

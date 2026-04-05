@@ -12,6 +12,7 @@ import (
 )
 
 var defaultPrefetchWorkers = min(runtime.NumCPU(), 16)
+var prefetchDependencyScanVersionLimit = 32
 
 // prefetchResult holds the fetched metadata for one package.
 type prefetchResult struct {
@@ -19,14 +20,15 @@ type prefetchResult struct {
 	err      error
 }
 
-// prefetchMetadata performs a BFS crawl of package metadata using parallel workers.
-// It fetches all reachable packages (root + transitive) concurrently and returns when
-// all work is done or the context is cancelled.
+// prefetchMetadata performs a bounded BFS crawl of package metadata using
+// parallel workers. It returns when all queued work is done or the context is
+// cancelled.
 //
 // Each package is fetched exactly once (tracked via the queued map). Transitive deps
-// are discovered from NonPlatformRequire() on every version entry returned by the server,
-// which may cause over-fetching (packages from versions that won't ultimately be selected),
-// but that is acceptable given the parallelism gains.
+// are discovered from only the first N version entries returned by the server
+// (N is prefetchDependencyScanVersionLimit). Scanning all versions can explode
+// on large ecosystems and dominate update time. Missing transitive packages are
+// still safe: the solver falls back to on-demand fetches on cache misses.
 func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames []string, progress func(string)) map[string]prefetchResult {
 	results := make(map[string]prefetchResult)
 	var mu sync.Mutex
@@ -77,7 +79,11 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 
 				// Discover transitive dependencies and enqueue new ones.
 				if err == nil {
-					for _, v := range versions {
+					scan := versions
+					if len(scan) > prefetchDependencyScanVersionLimit {
+						scan = scan[:prefetchDependencyScanVersionLimit]
+					}
+					for _, v := range scan {
 						for dep := range v.NonPlatformRequire() {
 							enqueue(dep)
 						}
