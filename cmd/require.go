@@ -129,7 +129,7 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 		}
 	}
 
-	if err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c); err != nil {
+	if _, err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c, false); err != nil {
 		return err
 	}
 

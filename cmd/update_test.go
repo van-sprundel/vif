@@ -88,3 +88,14 @@ func TestFormatPackageList(t *testing.T) {
 		}
 	}
 }
+
+func TestNewUpdateCmdProfileFlag(t *testing.T) {
+	cmd := newUpdateCmd()
+	flag := cmd.Flags().Lookup("profile")
+	if flag == nil {
+		t.Fatal("expected --profile flag to exist")
+	}
+	if got, want := flag.Usage, "print per-phase timings and slowest packages"; got != want {
+		t.Fatalf("profile flag usage = %q, want %q", got, want)
+	}
+}

@@ -31,6 +31,7 @@ type Result struct {
 	FromCache bool
 	Skipped   bool // true for path-type packages that don't need downloading
 	Err       error
+	Duration  time.Duration
 }
 
 // Downloader downloads and extracts packages into the cache.
@@ -94,13 +95,19 @@ func (d *Downloader) Download(ctx context.Context, packages []pkg.Package) ([]Re
 }
 
 func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
+	started := time.Now()
+	finish := func(r Result) Result {
+		r.Duration = time.Since(started)
+		return r
+	}
+
 	if pkg.RequiresGitClone(p) {
-		return d.gitClone(ctx, p)
+		return finish(d.gitClone(ctx, p))
 	}
 
 	// Skip packages that cannot be fetched into the cache.
 	if !pkg.RequiresDownload(p) {
-		return Result{Package: p, Skipped: true}
+		return finish(Result{Package: p, Skipped: true})
 	}
 
 	key := cache.CacheKey(p.Dist.URL)
@@ -108,38 +115,38 @@ func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
 	// Check cache: both SQLite row and extracted directory on disk.
 	_, found, err := d.cache.Lookup(p.Name, p.Version)
 	if err != nil {
-		return Result{Package: p, Err: fmt.Errorf("cache lookup: %w", err)}
+		return finish(Result{Package: p, Err: fmt.Errorf("cache lookup: %w", err)})
 	}
 	if found && d.cache.HasExtracted(key) {
-		return Result{Package: p, FromCache: true}
+		return finish(Result{Package: p, FromCache: true})
 	}
 
 	// Download the archive.
 	body, err := d.fetch(ctx, p.Dist.URL)
 	if err != nil {
-		return Result{Package: p, Err: fmt.Errorf("download %s: %w", p.Name, err)}
+		return finish(Result{Package: p, Err: fmt.Errorf("download %s: %w", p.Name, err)})
 	}
 
 	// Verify SHA if provided.
 	if p.Dist.Shasum != "" {
 		got := fmt.Sprintf("%x", sha256.Sum256(body))
 		if got != p.Dist.Shasum {
-			return Result{Package: p, Err: fmt.Errorf("sha256 mismatch for %s: got %s, want %s", p.Name, got, p.Dist.Shasum)}
+			return finish(Result{Package: p, Err: fmt.Errorf("sha256 mismatch for %s: got %s, want %s", p.Name, got, p.Dist.Shasum)})
 		}
 	}
 
 	// Extract archive into cache.
 	extractedDir := d.cache.ExtractedDir(key)
 	if err := extractArchive(body, p.Dist.Type, extractedDir); err != nil {
-		return Result{Package: p, Err: fmt.Errorf("extract %s: %w", p.Name, err)}
+		return finish(Result{Package: p, Err: fmt.Errorf("extract %s: %w", p.Name, err)})
 	}
 
 	// Record in SQLite.
 	if err := d.cache.Insert(p.Name, p.Version, p.Dist.URL, p.Dist.Reference, key); err != nil {
-		return Result{Package: p, Err: fmt.Errorf("cache insert: %w", err)}
+		return finish(Result{Package: p, Err: fmt.Errorf("cache insert: %w", err)})
 	}
 
-	return Result{Package: p}
+	return finish(Result{Package: p})
 }
 
 func (d *Downloader) gitClone(ctx context.Context, p pkg.Package) Result {
