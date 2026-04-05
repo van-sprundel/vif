@@ -154,6 +154,10 @@ func parseSingleConstraint(s string) ([]bound, error) {
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
+		if !versionHasStabilitySuffix(s[2:]) {
+			v.Stability = Dev
+			v.StabilityNum = 0
+		}
 		return []bound{{op: OpGte, version: v}}, nil
 	}
 	if strings.HasPrefix(s, "<=") {
@@ -182,6 +186,10 @@ func parseSingleConstraint(s string) ([]bound, error) {
 		if err != nil {
 			return nil, fmt.Errorf("constraint: %w", err)
 		}
+		if !versionHasStabilitySuffix(s[1:]) {
+			v.Stability = Dev
+			v.StabilityNum = 0
+		}
 		return []bound{{op: OpLt, version: v}}, nil
 	}
 
@@ -205,7 +213,7 @@ func parseCaret(s string) ([]bound, error) {
 
 	segments := strings.Count(strings.TrimPrefix(strings.TrimPrefix(s, "v"), "V"), ".") + 1
 
-	upper := Version{Stability: Stable}
+	upper := Version{Stability: Dev}
 	if v.Major != 0 {
 		upper.Major = v.Major + 1
 	} else if segments == 1 {
@@ -219,8 +227,10 @@ func parseCaret(s string) ([]bound, error) {
 	}
 
 	lower := v
-	lower.Stability = v.Stability
-	lower.StabilityNum = v.StabilityNum
+	if !versionHasStabilitySuffix(s) {
+		lower.Stability = Dev
+		lower.StabilityNum = 0
+	}
 
 	return []bound{
 		{op: OpGte, version: lower},
@@ -237,20 +247,23 @@ func parseTilde(s string) ([]bound, error) {
 		return nil, fmt.Errorf("constraint: tilde: %w", err)
 	}
 
-	upper := Version{Stability: Stable}
-	// Count how many segments were in the original.
+	upper := Version{Stability: Dev}
 	segments := strings.Count(strings.TrimPrefix(strings.TrimPrefix(s, "v"), "V"), ".") + 1
 	if segments >= 3 {
-		// ~1.2.3 => <1.3.0
 		upper.Major = v.Major
 		upper.Minor = v.Minor + 1
 	} else {
-		// ~1.2 => <2.0.0
 		upper.Major = v.Major + 1
 	}
 
+	lower := v
+	if !versionHasStabilitySuffix(s) {
+		lower.Stability = Dev
+		lower.StabilityNum = 0
+	}
+
 	return []bound{
-		{op: OpGte, version: v},
+		{op: OpGte, version: lower},
 		{op: OpLt, version: upper},
 	}, nil
 }
@@ -260,8 +273,8 @@ func parseTilde(s string) ([]bound, error) {
 // 1.*   => >=1.0.0 <2.0.0
 func parseWildcard(s string) ([]bound, error) {
 	parts := strings.Split(s, ".")
-	lower := Version{Stability: Stable}
-	upper := Version{Stability: Stable}
+	lower := Version{Stability: Dev}
+	upper := Version{Stability: Dev}
 
 	switch {
 	case len(parts) == 3 && parts[2] == "*":
@@ -294,6 +307,14 @@ func parseWildcard(s string) ([]bound, error) {
 		{op: OpGte, version: lower},
 		{op: OpLt, version: upper},
 	}, nil
+}
+
+func versionHasStabilitySuffix(s string) bool {
+	m := versionRe.FindStringSubmatch(s)
+	if m == nil {
+		return false
+	}
+	return m[5] != ""
 }
 
 func parseIntPart(s string) (int, error) {

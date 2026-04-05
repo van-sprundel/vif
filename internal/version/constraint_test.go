@@ -87,6 +87,31 @@ func TestConstraintMatches(t *testing.T) {
 		// Dev version matching.
 		{"dev-main", "dev-main", true},
 		{"dev-main", "dev-master", false},
+
+		// Pre-release matching (Composer compat: unsuffixed >=/caret/tilde match pre-releases).
+		{"^6.0.0", "6.0.0-alpha1", true},
+		{"^6.0.0", "6.0.0", true},
+		{"^6.0.0", "7.0.0-alpha1", false},
+		{"^6.0.0", "5.9.0", false},
+		{"~6.0.0", "6.0.0-alpha1", true},
+		{"~6.0.0", "6.0.9-beta2", true},
+		{"~6.0.0", "6.1.0-alpha1", false},
+		{">=6.0.0", "6.0.0-alpha1", true},
+		{">=6.0.0", "5.9.9", false},
+		{"<7.0.0", "6.0.0-alpha1", true},
+		{"<7.0.0", "7.0.0-alpha1", false},
+		{">6.0.0", "6.0.0-alpha1", false},
+		{">6.0.0", "6.0.1", true},
+		{"<=7.0.0", "7.0.0-alpha1", true},
+		{"6.0.*", "6.0.0-alpha1", true},
+		{"6.0.*", "6.1.0-alpha1", false},
+
+		// Explicit stability suffix preserves exact bound.
+		{"^6.0.0-alpha1", "6.0.0-alpha1", true},
+		{"^6.0.0-alpha1", "6.0.0-beta1", true},
+		{"^6.0.0-alpha1", "6.0.0-dev", false},
+		{">=6.0.0-beta1", "6.0.0-alpha1", false},
+		{">=6.0.0-beta1", "6.0.0-beta1", true},
 	}
 
 	for _, tc := range tests {
@@ -129,12 +154,12 @@ func TestConstraintString(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"^1.2.3", ">=1.2.3 <2.0.0"},
-		{"~1.2.3", ">=1.2.3 <1.3.0"},
-		{"1.0.*", ">=1.0.0 <1.1.0"},
-		{">=1.0.0 <2.0.0", ">=1.0.0 <2.0.0"},
-		{"^1.0 || ^2.0", ">=1.0.0 <2.0.0 || >=2.0.0 <3.0.0"},
-		{"^1.0|^2.0", ">=1.0.0 <2.0.0 || >=2.0.0 <3.0.0"},
+		{"^1.2.3", ">=1.2.3-dev <2.0.0-dev"},
+		{"~1.2.3", ">=1.2.3-dev <1.3.0-dev"},
+		{"1.0.*", ">=1.0.0-dev <1.1.0-dev"},
+		{">=1.0.0 <2.0.0", ">=1.0.0-dev <2.0.0-dev"},
+		{"^1.0 || ^2.0", ">=1.0.0-dev <2.0.0-dev || >=2.0.0-dev <3.0.0-dev"},
+		{"^1.0|^2.0", ">=1.0.0-dev <2.0.0-dev || >=2.0.0-dev <3.0.0-dev"},
 	}
 
 	for _, tc := range tests {
@@ -155,10 +180,10 @@ func TestConstraintStabilityFlag(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"^2.0.2@RC", ">=2.0.2 <3.0.0"},
-		{"^1.0@beta", ">=1.0.0 <2.0.0"},
-		{">=1.0.0@stable", ">=1.0.0"},
-		{"~1.2@alpha", ">=1.2.0 <2.0.0"},
+		{"^2.0.2@RC", ">=2.0.2-dev <3.0.0-dev"},
+		{"^1.0@beta", ">=1.0.0-dev <2.0.0-dev"},
+		{">=1.0.0@stable", ">=1.0.0-dev"},
+		{"~1.2@alpha", ">=1.2.0-dev <2.0.0-dev"},
 		{"1.0.0@dev", "1.0.0"},
 	}
 
