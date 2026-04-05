@@ -801,3 +801,119 @@ func TestStringListUnmarshalMixedShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestGetPackageRetriesOn429(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "~dev") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		n := int(attempts)
+		attempts++
+		if n < 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != len(resp.Packages["acme/foo"]) {
+		t.Fatalf("got %d versions, want %d", len(versions), len(resp.Packages["acme/foo"]))
+	}
+	if int(attempts) != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestGetPackageRetriesOn503(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "~dev") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		n := int(attempts)
+		attempts++
+		if n < 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != len(resp.Packages["acme/foo"]) {
+		t.Fatalf("got %d versions, want %d", len(versions), len(resp.Packages["acme/foo"]))
+	}
+}
+
+func TestGetPackageExhaustsRetriesOn429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClientWithHTTPClient(srv.URL, &http.Client{Timeout: 10 * time.Second})
+	_, err := client.GetPackage(context.Background(), "acme/foo")
+	if err == nil {
+		t.Fatal("expected error when all retries are 429")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("expected 429 in error, got: %v", err)
+	}
+}
+
+func TestGetPackageRetryAfterHeader(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "~dev") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		n := int(attempts)
+		attempts++
+		if n < 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	client := packagist.NewClient(srv.URL)
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) == 0 {
+		t.Fatal("expected versions")
+	}
+	if elapsed < 800*time.Millisecond {
+		t.Fatalf("expected at least ~1s retry delay, got %v", elapsed)
+	}
+}
