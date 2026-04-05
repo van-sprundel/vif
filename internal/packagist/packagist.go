@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -262,6 +263,66 @@ func (c *Client) SetMetadataCache(mc MetadataCache) {
 	c.metaCache = mc
 }
 
+const metadataMaxRetries = 3
+
+func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	baseDelay := 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := range metadataMaxRetries {
+		if attempt > 0 {
+			delay := baseDelay * time.Duration(1<<(attempt-1))
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if !isRetryableMetadataStatus(resp.StatusCode) || attempt == metadataMaxRetries-1 {
+			return resp, nil
+		}
+
+		resp.Body.Close()
+
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, parseErr := strconv.Atoi(ra); parseErr == nil && secs > 0 && secs <= 60 {
+				delay := time.Duration(secs) * time.Second
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
+				continue
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("packagist: %d attempts failed: %w", metadataMaxRetries, lastErr)
+}
+
+func isRetryableMetadataStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return code >= 500 && code <= 599
+	}
+}
+
 // GetPackage fetches all versions of a package from Packagist (stable + dev).
 // Uses ETag-based HTTP caching to avoid redundant downloads.
 func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
@@ -338,7 +399,7 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 	}
 	c.auth.ApplyRequest(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("packagist: fetch %s: %w", name, err)
 	}
@@ -380,7 +441,6 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 	c.cache[name] = cacheEntry{etag: etag, versions: versions}
 	c.mu.Unlock()
 
-	// Persist to durable cache for future process invocations.
 	if c.metaCache != nil {
 		_ = c.metaCache.InsertMetadata(c.baseURL, name, etag, body)
 	}
@@ -428,7 +488,7 @@ func (c *Client) fetchP2Dev(ctx context.Context, name string) []VersionEntry {
 	}
 	c.auth.ApplyRequest(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(ctx, req)
 	if err != nil {
 		return nil
 	}
@@ -584,7 +644,7 @@ func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {
 	}
 	c.auth.ApplyRequest(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("packagist: fetch %s: %w", url, err)
 	}
