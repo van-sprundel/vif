@@ -903,6 +903,49 @@ func TestResolveProvideWildcard(t *testing.T) {
 	}
 }
 
+func TestResolveDefersNotFoundUntilProviderResolved(t *testing.T) {
+	// acme/app requires:
+	// - zz/virtual-contract (missing on registry)
+	// - acme/provider (which provides zz/virtual-contract 1.0.0)
+	//
+	// Resolver should defer the missing package once, resolve acme/provider,
+	// then satisfy zz/virtual-contract via provide.
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{
+		"zz/virtual-contract": "^1.0",
+		"acme/provider":       "^1.0",
+	})
+	reg.addFull("acme/provider", "1.0.0", nil, map[string]string{
+		"zz/virtual-contract": "1.0.0",
+	}, nil, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 2 {
+		t.Fatalf("got %d packages, want 2: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["acme/app"]; !ok {
+		t.Fatal("missing acme/app")
+	}
+	if _, ok := byName["acme/provider"]; !ok {
+		t.Fatal("missing acme/provider")
+	}
+}
+
 func TestResolveRootReplaceSatisfiesDependency(t *testing.T) {
 	reg := newRegistry()
 	reg.add("symfony/string", "6.4.34", map[string]string{"symfony/polyfill-ctype": "~1.8"})

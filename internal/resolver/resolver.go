@@ -132,7 +132,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	sort.Slice(reqs, func(i, j int) bool { return reqs[i].name < reqs[j].name })
 
 	state := newState()
-	if !r.solve(state, reqs) {
+	if !r.solvePubGrub(state, reqs) {
 		return nil, r.buildError(state)
 	}
 
@@ -378,7 +378,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	candidates, err := r.getCandidates(req.name, effectiveStability)
 	if err != nil || len(candidates) == 0 {
 		if err != nil && errors.Is(err, packagist.ErrPackageNotFound) {
-			if !req.deferred && hasPendingRootRequirement(rest) {
+			// A missing package can still be satisfiable later via provide/replace
+			// from another unresolved package in the queue.
+			if !req.deferred && len(rest) > 0 {
 				deferred := req
 				deferred.deferred = true
 				return r.solve(s, append(rest, deferred))
