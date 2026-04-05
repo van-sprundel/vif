@@ -179,9 +179,10 @@ type cacheEntry struct {
 }
 
 type composerRootResponse struct {
-	Minified string                  `json:"minified"`
-	Packages rawPackageMap           `json:"packages"`
-	Includes map[string]includeEntry `json:"includes"`
+	Minified    string                  `json:"minified"`
+	MetadataURL string                  `json:"metadata-url"`
+	Packages    rawPackageMap           `json:"packages"`
+	Includes    map[string]includeEntry `json:"includes"`
 }
 
 type includeEntry struct {
@@ -218,6 +219,7 @@ type Client struct {
 	rootErr      error
 	root         rawPackageMap
 	rootMinified bool
+	metadataURL  string
 	includes     []string
 }
 
@@ -354,6 +356,16 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	}
 	if !errors.Is(err, ErrPackageNotFound) {
 		return nil, err
+	}
+	useIncludeFallback, fallbackErr := c.shouldUseIncludeFallback(ctx)
+	if fallbackErr != nil {
+		return nil, fallbackErr
+	}
+	if !useIncludeFallback {
+		c.mu.Lock()
+		c.cache[name] = cacheEntry{notFound: true}
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 
 	versions, err = c.getPackageFromRootIncludes(ctx, name)
@@ -632,9 +644,28 @@ func (c *Client) loadRootMetadata(ctx context.Context) (rawPackageMap, []string,
 	c.rootErr = nil
 	c.root = cloneRawMessageMap(root.Packages)
 	c.rootMinified = root.Minified == "composer/2.0"
+	c.metadataURL = strings.TrimSpace(root.MetadataURL)
 	c.includes = includeURLs
 	c.mu.Unlock()
 	return root.Packages, append([]string(nil), includeURLs...), root.Minified == "composer/2.0", nil
+}
+
+func (c *Client) shouldUseIncludeFallback(ctx context.Context) (bool, error) {
+	_, includeURLs, _, err := c.loadRootMetadata(ctx)
+	if err != nil {
+		if errors.Is(err, ErrAuthRequired) {
+			return false, err
+		}
+		return false, nil
+	}
+	c.mu.RLock()
+	metadataURL := c.metadataURL
+	c.mu.RUnlock()
+	// Composer 2 repositories advertise metadata-url; p2 404 can be treated as final.
+	if metadataURL != "" {
+		return false, nil
+	}
+	return len(includeURLs) > 0, nil
 }
 
 func (c *Client) fetchJSON(ctx context.Context, url string) ([]byte, error) {

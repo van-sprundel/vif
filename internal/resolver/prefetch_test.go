@@ -48,7 +48,7 @@ func TestPrefetchMetadataDiscoversTransitiveDeps(t *testing.T) {
 	client.add("acme/bar", "1.2.0", map[string]string{"acme/baz": "^2.0"})
 	client.add("acme/baz", "2.0.0", nil)
 
-	results := prefetchMetadata(context.Background(), client, []string{"acme/foo"}, nil)
+	results := prefetchMetadata(context.Background(), client, []string{"acme/foo"}, nil, nil)
 
 	for _, name := range []string{"acme/foo", "acme/bar", "acme/baz"} {
 		r, ok := results[name]
@@ -78,7 +78,7 @@ func TestPrefetchMetadataDeduplicatesPackages(t *testing.T) {
 	client.add("acme/b", "1.0.0", map[string]string{"acme/shared": "^1.0"})
 	client.add("acme/shared", "1.5.0", nil)
 
-	results := prefetchMetadata(context.Background(), client, []string{"acme/a", "acme/b"}, nil)
+	results := prefetchMetadata(context.Background(), client, []string{"acme/a", "acme/b"}, nil, nil)
 
 	if _, ok := results["acme/shared"]; !ok {
 		t.Fatal("missing acme/shared in results")
@@ -109,7 +109,7 @@ func TestPrefetchMetadataProgressCallback(t *testing.T) {
 		mu.Unlock()
 	}
 
-	prefetchMetadata(context.Background(), client, []string{"acme/foo"}, progress)
+	prefetchMetadata(context.Background(), client, []string{"acme/foo"}, progress, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -133,7 +133,7 @@ func TestPrefetchMetadataHandlesNotFound(t *testing.T) {
 	client.add("acme/foo", "1.0.0", map[string]string{"missing/pkg": "^1.0"})
 	// missing/pkg is intentionally absent from the registry.
 
-	results := prefetchMetadata(context.Background(), client, []string{"acme/foo"}, nil)
+	results := prefetchMetadata(context.Background(), client, []string{"acme/foo"}, nil, nil)
 
 	if _, ok := results["acme/foo"]; !ok {
 		t.Fatal("missing result for acme/foo")
@@ -161,7 +161,7 @@ func TestPrefetchMetadataBoundsDependencyScanToRecentVersions(t *testing.T) {
 	client.add("acme/recent", "1.0.0", nil)
 	client.add("acme/old", "1.0.0", nil)
 
-	results := prefetchMetadata(context.Background(), client, []string{"acme/root"}, nil)
+	results := prefetchMetadata(context.Background(), client, []string{"acme/root"}, nil, nil)
 
 	if _, ok := results["acme/recent"]; !ok {
 		t.Fatal("expected acme/recent to be prefetched")
@@ -181,7 +181,7 @@ func TestPrefetchMetadataContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	// Should not block or panic.
-	prefetchMetadata(ctx, client, []string{"acme/foo"}, nil)
+	prefetchMetadata(ctx, client, []string{"acme/foo"}, nil, nil)
 }
 
 // TestPrefetchMetadataEmptyRoots verifies that prefetch with no root packages
@@ -189,7 +189,7 @@ func TestPrefetchMetadataContextCancellation(t *testing.T) {
 func TestPrefetchMetadataEmptyRoots(t *testing.T) {
 	client := newMockFetcher()
 
-	results := prefetchMetadata(context.Background(), client, nil, nil)
+	results := prefetchMetadata(context.Background(), client, nil, nil, nil)
 	if len(results) != 0 {
 		t.Errorf("expected empty results, got %v", results)
 	}

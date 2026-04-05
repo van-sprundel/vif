@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/packagist"
@@ -21,8 +22,13 @@ type ResolvedPackage struct {
 	Dev     bool // true if only required via require-dev
 }
 
+const requirementScoreCandidateScanLimit = 64
+
 // Options controls solver behavior for update-like flows.
 type Options struct {
+	// Fixed maps package name -> version that must be selected.
+	// When set, candidates are filtered to that exact version.
+	Fixed map[string]string
 	// Locked maps package name -> currently locked version. When set, the
 	// resolver prefers the locked version over newer candidates when it still
 	// satisfies all constraints.
@@ -33,6 +39,10 @@ type Options struct {
 	// RestrictedPackages constrains a specific package set to Restriction.
 	RestrictedPackages map[string]struct{}
 	Restriction        string
+	// LookupDone is called after each metadata lookup during prefetch.
+	LookupDone func(name string, duration time.Duration, err error)
+	// SolveProgress is called as the backtracking solver advances.
+	SolveProgress func(name string)
 }
 
 // Resolve resolves all dependencies from a composer.json using the given Packagist client.
@@ -61,7 +71,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 
 	// Prefetch all reachable metadata in parallel before the sequential solve
 	// phase, so getCandidates hits the cache for every package.
-	prefetched := prefetchMetadata(ctx, client, rootNames, progress)
+	prefetched := prefetchMetadata(ctx, client, rootNames, progress, opts.LookupDone)
 
 	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
 	populateVersionCache(versionCache, prefetched, cj.PreferStable)
@@ -75,15 +85,21 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		client:           client,
 		minimumStability: minimumStability,
 		preferStable:     cj.PreferStable,
+		fixed:            opts.Fixed,
 		locked:           opts.Locked,
 		lockedEntries:    opts.LockedEntries,
 		rootProvide:      cj.Provide,
 		rootReplace:      cj.Replace,
 		rootConflict:     cj.Conflict,
+		rootSatisfiers:   buildRootSatisfiers(cj.Provide, cj.Replace),
+		rootConflicts:    buildRootConflicts(cj.Conflict),
 		versionCache:     versionCache,
 		// progress is nil during solve to avoid double-reporting; all lookups
 		// were already reported during the prefetch pass above.
 		progress: nil,
+		// solveProgress reports selected requirements during the backtracking phase.
+		solveProgress:        opts.SolveProgress,
+		providedVersionCache: make(map[string]providedVersion),
 	}
 	if opts.Restriction != "" && len(opts.RestrictedPackages) > 0 {
 		c, err := version.ParseConstraint(opts.Restriction)
@@ -143,18 +159,28 @@ type requirement struct {
 }
 
 type resolvedEntry struct {
-	entry packagist.VersionEntry
-	dev   bool
+	entry     packagist.VersionEntry
+	version   version.Version
+	conflicts []dependencyRequirement
+	dev       bool
 }
 
 type candidate struct {
-	entry   packagist.VersionEntry
-	version version.Version
+	entry        packagist.VersionEntry
+	version      version.Version
+	dependencies []dependencyRequirement
+	conflicts    []dependencyRequirement
 }
 
 type candidateCacheEntry struct {
 	candidates []candidate
 	err        error
+}
+
+type dependencyRequirement struct {
+	name       string
+	constraint version.Constraint
+	raw        string
 }
 
 // provider tracks which real package provides a virtual package.
@@ -223,23 +249,40 @@ type conflict struct {
 }
 
 type resolver struct {
-	ctx                context.Context
-	client             packagist.Fetcher
-	minimumStability   version.Stability
-	preferStable       bool
-	locked             map[string]string
-	lockedEntries      map[string]packagist.VersionEntry
-	rootProvide        map[string]string
-	rootReplace        map[string]string
-	rootConflict       map[string]string
-	restriction        version.Constraint
-	hasRestriction     bool
-	restrictedPackages map[string]struct{}
-	versionCache       map[string]candidateCacheEntry
-	lastConflict       *conflict
-	terminalErr        error
-	progress           func(string)
-	depth              int
+	ctx                  context.Context
+	client               packagist.Fetcher
+	minimumStability     version.Stability
+	preferStable         bool
+	fixed                map[string]string
+	locked               map[string]string
+	lockedEntries        map[string]packagist.VersionEntry
+	rootProvide          map[string]string
+	rootReplace          map[string]string
+	rootConflict         map[string]string
+	rootSatisfiers       map[string]rootSatisfier
+	rootConflicts        map[string]version.Constraint
+	restriction          version.Constraint
+	hasRestriction       bool
+	restrictedPackages   map[string]struct{}
+	versionCache         map[string]candidateCacheEntry
+	lastConflict         *conflict
+	terminalErr          error
+	progress             func(string)
+	solveProgress        func(string)
+	depth                int
+	providedVersionCache map[string]providedVersion
+}
+
+type rootSatisfier struct {
+	any      bool
+	hasValue bool
+	value    version.Version
+}
+
+type providedVersion struct {
+	any      bool
+	hasValue bool
+	value    version.Version
 }
 
 // recordConflict records a conflict, keeping the deepest (most specific) one.
@@ -268,6 +311,9 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	defer func() { r.depth-- }()
 
 	req, rest, pendingConstraints := r.selectRequirement(s, reqs)
+	if r.solveProgress != nil {
+		r.solveProgress(req.name)
+	}
 
 	// Skip platform packages that slipped through.
 	if pkg.IsPlatformPackage(req.name) {
@@ -276,18 +322,29 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 
 	// If already resolved, check compatibility.
 	if existing, ok := s.resolved[req.name]; ok {
-		v, err := version.Parse(existing.entry.Version)
-		if err != nil {
-			return false
-		}
-		if matchesAll(v, pendingConstraints) {
-			// Compatible. Track constraint and continue.
-			s.constraints[req.name] = appendConstraintsUnique(s.constraints[req.name], pendingConstraints)
+		if matchesAll(existing.version, pendingConstraints) {
+			// Compatible. Track constraint and continue. Restore on failure so
+			// failed branches do not leak tightened constraints into siblings.
+			prevConstraints, hadConstraints := s.constraints[req.name]
+			mergedConstraints := appendConstraintsUnique(append([]version.Constraint{}, prevConstraints...), pendingConstraints)
+			s.constraints[req.name] = mergedConstraints
+			prevEntry := existing
 			if existing.dev && !req.dev {
 				existing.dev = false
 				s.resolved[req.name] = existing
 			}
-			return r.solve(s, rest)
+			if r.solve(s, rest) {
+				return true
+			}
+			if hadConstraints {
+				s.constraints[req.name] = prevConstraints
+			} else {
+				delete(s.constraints, req.name)
+			}
+			if prevEntry.dev != existing.dev {
+				s.resolved[req.name] = prevEntry
+			}
+			return false
 		}
 		// Not compatible — record conflict and let caller backtrack.
 		r.recordConflict(req.name, req.constraint,
@@ -300,15 +357,10 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	if prov, ok := s.providers[req.name]; ok {
 		existing, hasReal := s.resolved[prov.realName]
 		if hasReal {
-			provVersion := existing.entry.Provide[req.name]
-			if provVersion == "" {
-				provVersion = existing.entry.Replace[req.name]
-			}
-			if provVersion != "" && provVersion != "*" {
-				v, err := version.Parse(provVersion)
-				if err == nil && !matchesAll(v, pendingConstraints) {
+			if pv, ok := r.providedVersion(existing.entry, req.name); ok && pv.hasValue {
+				if !matchesAll(pv.value, pendingConstraints) {
 					r.recordConflict(req.name, req.constraint,
-						fmt.Sprintf("%s provides %s@%s which does not match %s", prov.realName, req.name, provVersion, req.constraint))
+						fmt.Sprintf("%s provides %s which does not match %s", prov.realName, req.name, req.constraint))
 					return false
 				}
 			}
@@ -367,20 +419,54 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 			lastRejectedVersion = c.entry.Version
 			continue
 		}
-		if conflictReason, ok := r.conflictsWithResolved(c.entry, s); ok {
+		if reason, ok := r.requiresAlreadyResolvedConflict(c, s); ok {
+			lastRejectedVersion = c.entry.Version
+			r.recordConflict(req.name, req.constraint, reason)
+			continue
+		}
+		if conflictReason, ok := r.conflictsWithResolved(c, s); ok {
 			lastRejectedVersion = c.entry.Version
 			r.recordConflict(req.name, req.constraint, conflictReason)
 			continue
 		}
 
-		// Try this candidate: snapshot state, resolve transitive deps.
-		snapshot := s.clone()
-		s.resolved[req.name] = resolvedEntry{entry: c.entry, dev: req.dev}
-		s.constraints[req.name] = appendConstraintsUnique(s.constraints[req.name], pendingConstraints)
-		s.registerProviders(c.entry)
+		// Try this candidate: mutate local state and roll back on failure.
+		prevConstraints, hadConstraints := s.constraints[req.name]
+		mergedConstraints := appendConstraintsUnique(append([]version.Constraint{}, prevConstraints...), pendingConstraints)
+		prevResolved, hadResolved := s.resolved[req.name]
+		s.resolved[req.name] = resolvedEntry{entry: c.entry, version: c.version, conflicts: c.conflicts, dev: req.dev}
+		s.constraints[req.name] = mergedConstraints
+		type providerRollback struct {
+			name    string
+			prev    provider
+			existed bool
+		}
+		rollbacks := make([]providerRollback, 0, len(c.entry.Provide)+len(c.entry.Replace))
+		recordProvider := func(name string) {
+			if pkg.IsPlatformPackage(name) {
+				return
+			}
+			prev, existed := s.providers[name]
+			rollbacks = append(rollbacks, providerRollback{name: name, prev: prev, existed: existed})
+			s.providers[name] = provider{realName: c.entry.Name}
+		}
+		for name := range c.entry.Provide {
+			recordProvider(name)
+		}
+		for name := range c.entry.Replace {
+			recordProvider(name)
+		}
 
-		// Gather transitive deps.
-		transitive := transitiveReqs(c.entry, req.dev)
+		// Gather transitive deps and drop ones already satisfied by the current state.
+		transitive, ok := r.pruneSatisfiedTransitives(s, transitiveReqs(c, req.dev))
+		if !ok {
+			lastRejectedVersion = c.entry.Version
+			continue
+		}
+		if !r.transitivesRemainViable(s, transitive, rest) {
+			lastRejectedVersion = c.entry.Version
+			continue
+		}
 		allReqs := append(transitive, rest...)
 
 		if r.solve(s, allReqs) {
@@ -390,8 +476,25 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 			return false
 		}
 
-		// Backtrack: restore state.
-		*s = *snapshot
+		// Backtrack: restore state for this decision.
+		if hadResolved {
+			s.resolved[req.name] = prevResolved
+		} else {
+			delete(s.resolved, req.name)
+		}
+		if hadConstraints {
+			s.constraints[req.name] = prevConstraints
+		} else {
+			delete(s.constraints, req.name)
+		}
+		for i := len(rollbacks) - 1; i >= 0; i-- {
+			rb := rollbacks[i]
+			if rb.existed {
+				s.providers[rb.name] = rb.prev
+			} else {
+				delete(s.providers, rb.name)
+			}
+		}
 	}
 
 	// All candidates exhausted.
@@ -399,7 +502,11 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	if lastRejectedVersion != "" {
 		reason += fmt.Sprintf(" (tried up to %s)", lastRejectedVersion)
 	}
-	r.recordConflict(req.name, req.constraint, reason)
+	// Preserve a more specific conflict already discovered for this package at
+	// the same recursion depth.
+	if r.lastConflict == nil || r.lastConflict.packageName != req.name || r.lastConflict.depth != r.depth {
+		r.recordConflict(req.name, req.constraint, reason)
+	}
 
 	return false
 }
@@ -461,26 +568,18 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 		return -1
 	}
 	if existing, ok := s.resolved[req.name]; ok {
-		v, err := version.Parse(existing.entry.Version)
-		if err != nil {
-			return 0
-		}
-		if matchesAll(v, pending) {
+		if matchesAll(existing.version, pending) {
 			return -1
 		}
 		return 0
 	}
 	if prov, ok := s.providers[req.name]; ok {
 		if existing, hasReal := s.resolved[prov.realName]; hasReal {
-			provVersion := existing.entry.Provide[req.name]
-			if provVersion == "" {
-				provVersion = existing.entry.Replace[req.name]
-			}
-			if provVersion == "" || provVersion == "*" {
+			pv, ok := r.providedVersion(existing.entry, req.name)
+			if !ok || pv.any {
 				return -1
 			}
-			v, err := version.Parse(provVersion)
-			if err == nil && matchesAll(v, pending) {
+			if pv.hasValue && matchesAll(pv.value, pending) {
 				return -1
 			}
 			return 0
@@ -501,13 +600,40 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 		constraints := append([]version.Constraint{}, pending...)
 		constraints = appendConstraintsUnique(constraints, s.constraints[req.name])
 
+		scanLimit := len(cached.candidates)
+		if scanLimit > requirementScoreCandidateScanLimit {
+			scanLimit = requirementScoreCandidateScanLimit
+		}
+
 		matching := 0
-		for _, c := range cached.candidates {
+		for _, c := range cached.candidates[:scanLimit] {
 			if matchesAll(c.version, constraints) {
 				matching++
 			}
 		}
-		return matching
+
+		// Packages with many dependencies are highly constraining — resolve
+		// them early to prune the search space before their deps get locked
+		// to conflicting versions by other branches. This prevents
+		// combinatorial explosions on metapackages like drupal/core-recommended
+		// that pin exact versions of 100+ transitive dependencies.
+		// Only apply the penalty for packages with a significant number of deps
+		// (threshold 10) to avoid disturbing resolution order for normal packages.
+		depPenalty := 0
+		if len(cached.candidates) > 0 {
+			depCount := len(cached.candidates[0].dependencies)
+			if depCount > 10 {
+				depPenalty = depCount * 2
+			}
+		}
+
+		if len(cached.candidates) > scanLimit {
+			// requirementScore is a heuristic, not a correctness gate. Bounded
+			// scanning prevents O(requirements*candidates*constraints) blowups on
+			// large package universes while preserving candidate-count ordering.
+			return matching + 1 - depPenalty
+		}
+		return matching - depPenalty
 	}
 
 	return score
@@ -533,18 +659,13 @@ func (r *resolver) checkContext() bool {
 	return true
 }
 
-func transitiveReqs(entry packagist.VersionEntry, dev bool) []requirement {
-	nonPlatform := entry.NonPlatformRequire()
-	if len(nonPlatform) == 0 {
+func transitiveReqs(c candidate, dev bool) []requirement {
+	if len(c.dependencies) == 0 {
 		return nil
 	}
-	reqs := make([]requirement, 0, len(nonPlatform))
-	for name, constraintStr := range nonPlatform {
-		c, err := version.ParseConstraint(constraintStr)
-		if err != nil {
-			continue
-		}
-		reqs = append(reqs, requirement{name: name, constraint: c, dev: dev})
+	reqs := make([]requirement, 0, len(c.dependencies))
+	for _, dep := range c.dependencies {
+		reqs = append(reqs, requirement{name: dep.name, constraint: dep.constraint, dev: dev})
 	}
 	// Visit sibling transitive requirements in a deterministic order that
 	// surfaces missing packages before we recurse into unrelated siblings.
@@ -582,14 +703,24 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 		if err != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{entry: entry, version: v})
+		candidates = append(candidates, candidate{
+			entry:        entry,
+			version:      v,
+			dependencies: parseDependencyRequirements(entry),
+			conflicts:    parseConflictRequirements(entry),
+		})
 	}
 
 	// If Packagist returned no versions, try to use locked entry (VCS-only packages).
 	if len(candidates) == 0 {
 		if entry, ok := r.lockedEntries[name]; ok {
 			if v, err := version.Parse(entry.Version); err == nil {
-				candidates = []candidate{{entry: entry, version: v}}
+				candidates = []candidate{{
+					entry:        entry,
+					version:      v,
+					dependencies: parseDependencyRequirements(entry),
+					conflicts:    parseConflictRequirements(entry),
+				}}
 			}
 		}
 	}
@@ -620,6 +751,16 @@ func filterByStability(candidates []candidate, minStability version.Stability) [
 }
 
 func (r *resolver) filterCandidates(name string, candidates []candidate) []candidate {
+	if fixedVersion, ok := r.fixed[name]; ok && fixedVersion != "" {
+		filtered := candidates[:0]
+		for _, candidate := range candidates {
+			if candidate.entry.Version == fixedVersion {
+				filtered = append(filtered, candidate)
+			}
+		}
+		candidates = filtered
+	}
+
 	if !r.hasRestriction {
 		return candidates
 	}
@@ -699,88 +840,324 @@ func matchesAll(v version.Version, constraints []version.Constraint) bool {
 	return true
 }
 
-func (r *resolver) conflictsWithResolved(candidate packagist.VersionEntry, s *state) (string, bool) {
-	if reason, ok := rootConflictReason(candidate, r.rootConflict); ok {
+func (r *resolver) conflictsWithResolved(cand candidate, s *state) (string, bool) {
+	if reason, ok := rootConflictReason(cand, r.rootConflicts); ok {
 		return reason, true
 	}
 	for resolvedName, resolved := range s.resolved {
-		if reason, ok := packageConflictReason(candidate, resolved.entry); ok {
+		if reason, ok := candidateConflictsResolved(cand, resolved); ok {
 			return reason, true
 		}
-		if reason, ok := packageConflictReason(resolved.entry, candidate); ok {
+		if reason, ok := candidateConflictsResolved(candidate{
+			entry:     resolved.entry,
+			version:   resolved.version,
+			conflicts: resolved.conflicts,
+		}, resolvedEntry{
+			entry:   cand.entry,
+			version: cand.version,
+		}); ok {
 			return reason, true
 		}
 
-		if prov, ok := s.providers[candidate.Name]; ok && prov.realName == resolvedName {
+		if prov, ok := s.providers[cand.entry.Name]; ok && prov.realName == resolvedName {
 			continue
 		}
 	}
 	return "", false
 }
 
-func (r *resolver) rootSatisfies(name string, constraints []version.Constraint) bool {
-	relVersion := r.rootProvide[name]
-	if relVersion == "" {
-		relVersion = r.rootReplace[name]
+func (r *resolver) requiresAlreadyResolvedConflict(c candidate, s *state) (string, bool) {
+	for _, dep := range c.dependencies {
+		depName := dep.name
+		depConstraintStr := dep.raw
+		constraint := dep.constraint
+		if existing, ok := s.resolved[depName]; ok {
+			if !constraint.Matches(existing.version) {
+				return fmt.Sprintf("%s@%s requires %s %s but already resolved %s@%s", c.entry.Name, c.entry.Version, depName, depConstraintStr, depName, existing.entry.Version), true
+			}
+			continue
+		}
+
+		if prov, ok := s.providers[depName]; ok {
+			existing, hasReal := s.resolved[prov.realName]
+			if !hasReal {
+				continue
+			}
+			pv, ok := r.providedVersion(existing.entry, depName)
+			if !ok || pv.any || !pv.hasValue {
+				continue
+			}
+			if !constraint.Matches(pv.value) {
+				return fmt.Sprintf("%s@%s requires %s %s but %s provides %s", c.entry.Name, c.entry.Version, depName, depConstraintStr, prov.realName, depName), true
+			}
+			continue
+		}
+
+		if rs, ok := r.rootSatisfiers[depName]; ok && rs.hasValue && !constraint.Matches(rs.value) {
+			return fmt.Sprintf("%s@%s requires %s %s but root package provides %s", c.entry.Name, c.entry.Version, depName, depConstraintStr, depName), true
+		}
 	}
-	if relVersion == "" {
-		return false
-	}
-	if relVersion == "*" {
+
+	return "", false
+}
+
+func (r *resolver) transitivesRemainViable(s *state, transitive []requirement, rest []requirement) bool {
+	if len(transitive) == 0 {
 		return true
 	}
 
-	v, err := version.Parse(relVersion)
-	if err != nil {
+	pendingByName := make(map[string][]version.Constraint, len(rest))
+	for _, req := range rest {
+		pendingByName[req.name] = appendConstraintsUnique(pendingByName[req.name], []version.Constraint{req.constraint})
+	}
+
+	for _, dep := range transitive {
+		constraints := []version.Constraint{dep.constraint}
+		constraints = appendConstraintsUnique(constraints, s.constraints[dep.name])
+		constraints = appendConstraintsUnique(constraints, pendingByName[dep.name])
+		if !r.requirementHasPossibleCandidate(s, dep.name, constraints) {
+			r.recordConflict(dep.name, dep.constraint,
+				fmt.Sprintf("no version of %s can satisfy all constraints", dep.name))
+			return false
+		}
+	}
+
+	return true
+}
+
+func (r *resolver) pruneSatisfiedTransitives(s *state, transitive []requirement) ([]requirement, bool) {
+	if len(transitive) == 0 {
+		return nil, true
+	}
+	pruned := make([]requirement, 0, len(transitive))
+	for _, dep := range transitive {
+		if existing, ok := s.resolved[dep.name]; ok {
+			if !dep.constraint.Matches(existing.version) {
+				return nil, false
+			}
+			continue
+		}
+		if prov, ok := s.providers[dep.name]; ok {
+			existing, hasReal := s.resolved[prov.realName]
+			if hasReal {
+				pv, ok := r.providedVersion(existing.entry, dep.name)
+				if ok && pv.hasValue {
+					if !dep.constraint.Matches(pv.value) {
+						return nil, false
+					}
+					continue
+				}
+				if ok && pv.any {
+					continue
+				}
+			}
+		}
+		if rs, ok := r.rootSatisfiers[dep.name]; ok {
+			if rs.any {
+				continue
+			}
+			if rs.hasValue {
+				if !dep.constraint.Matches(rs.value) {
+					return nil, false
+				}
+				continue
+			}
+		}
+		pruned = append(pruned, dep)
+	}
+	return pruned, true
+}
+
+func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constraints []version.Constraint) bool {
+	if existing, ok := s.resolved[name]; ok {
+		return matchesAll(existing.version, constraints)
+	}
+
+	if prov, ok := s.providers[name]; ok {
+		existing, hasReal := s.resolved[prov.realName]
+		if !hasReal {
+			return true
+		}
+		pv, ok := r.providedVersion(existing.entry, name)
+		if !ok || pv.any {
+			return true
+		}
+		if !pv.hasValue {
+			return true
+		}
+		return matchesAll(pv.value, constraints)
+	}
+
+	if r.rootSatisfies(name, constraints) {
+		return true
+	}
+
+	cached, ok := r.versionCache[name]
+	if !ok || cached.err != nil || len(cached.candidates) == 0 {
+		// Unknown at this branch (e.g. provided by an unresolved package later):
+		// do not prune unless impossibility is proven.
+		return true
+	}
+
+	effectiveStability := r.minimumStability
+	for _, c := range constraints {
+		s := c.EffectiveStability(r.minimumStability)
+		if s < effectiveStability {
+			effectiveStability = s
+		}
+	}
+
+	candidates := filterByStability(cached.candidates, effectiveStability)
+	candidates = preferLocked(r.filterCandidates(name, candidates), r.locked[name])
+	for _, c := range candidates {
+		if !matchesAll(c.version, constraints) {
+			continue
+		}
+		if _, ok := r.conflictsWithResolved(c, s); ok {
+			continue
+		}
+		if _, ok := r.requiresAlreadyResolvedConflict(c, s); ok {
+			continue
+		}
+		return true
+	}
+
+	return false
+}
+
+func parseDependencyRequirements(entry packagist.VersionEntry) []dependencyRequirement {
+	nonPlatform := entry.NonPlatformRequire()
+	if len(nonPlatform) == 0 {
+		return nil
+	}
+	deps := make([]dependencyRequirement, 0, len(nonPlatform))
+	for name, raw := range nonPlatform {
+		c, err := version.ParseConstraint(raw)
+		if err != nil {
+			continue
+		}
+		deps = append(deps, dependencyRequirement{name: name, constraint: c, raw: raw})
+	}
+	return deps
+}
+
+func parseConflictRequirements(entry packagist.VersionEntry) []dependencyRequirement {
+	if len(entry.Conflict) == 0 {
+		return nil
+	}
+	conflicts := make([]dependencyRequirement, 0, len(entry.Conflict))
+	for name, raw := range entry.Conflict {
+		c, err := version.ParseConstraint(raw)
+		if err != nil {
+			continue
+		}
+		conflicts = append(conflicts, dependencyRequirement{name: name, constraint: c, raw: raw})
+	}
+	return conflicts
+}
+
+func (r *resolver) rootSatisfies(name string, constraints []version.Constraint) bool {
+	rs, ok := r.rootSatisfiers[name]
+	if !ok {
 		return false
 	}
-	return matchesAll(v, constraints)
+	if rs.any {
+		return true
+	}
+	if !rs.hasValue {
+		return false
+	}
+	return matchesAll(rs.value, constraints)
 }
 
-func packageConflictReason(a, b packagist.VersionEntry) (string, bool) {
-	constraintStr, ok := a.Conflict[b.Name]
-	if !ok || constraintStr == "" {
-		return "", false
+func candidateConflictsResolved(a candidate, b resolvedEntry) (string, bool) {
+	for _, conflict := range a.conflicts {
+		if conflict.name != b.entry.Name {
+			continue
+		}
+		if !conflict.constraint.Matches(b.version) {
+			continue
+		}
+		return fmt.Sprintf("%s@%s conflicts with already resolved %s@%s via constraint %s", a.entry.Name, a.entry.Version, b.entry.Name, b.entry.Version, conflict.raw), true
 	}
-
-	constraint, err := version.ParseConstraint(constraintStr)
-	if err != nil {
-		return "", false
-	}
-
-	v, err := version.Parse(b.Version)
-	if err != nil {
-		return "", false
-	}
-
-	if !constraint.Matches(v) {
-		return "", false
-	}
-
-	return fmt.Sprintf("%s@%s conflicts with already resolved %s@%s via constraint %s", a.Name, a.Version, b.Name, b.Version, constraintStr), true
+	return "", false
 }
 
-func rootConflictReason(candidate packagist.VersionEntry, conflicts map[string]string) (string, bool) {
-	constraintStr, ok := conflicts[candidate.Name]
-	if !ok || constraintStr == "" {
+func rootConflictReason(candidate candidate, conflicts map[string]version.Constraint) (string, bool) {
+	constraint, ok := conflicts[candidate.entry.Name]
+	if !ok {
+		return "", false
+	}
+	if !constraint.Matches(candidate.version) {
 		return "", false
 	}
 
-	constraint, err := version.ParseConstraint(constraintStr)
+	return fmt.Sprintf("root package conflicts with %s@%s via constraint %s", candidate.entry.Name, candidate.entry.Version, constraint.String()), true
+}
+
+func buildRootSatisfiers(rootProvide, rootReplace map[string]string) map[string]rootSatisfier {
+	out := make(map[string]rootSatisfier, len(rootProvide)+len(rootReplace))
+	for name, raw := range rootReplace {
+		out[name] = parseRootSatisfier(raw)
+	}
+	for name, raw := range rootProvide {
+		out[name] = parseRootSatisfier(raw)
+	}
+	return out
+}
+
+func parseRootSatisfier(raw string) rootSatisfier {
+	if raw == "*" {
+		return rootSatisfier{any: true}
+	}
+	v, err := version.Parse(raw)
 	if err != nil {
-		return "", false
+		return rootSatisfier{}
 	}
+	return rootSatisfier{hasValue: true, value: v}
+}
 
-	v, err := version.Parse(candidate.Version)
+func buildRootConflicts(conflicts map[string]string) map[string]version.Constraint {
+	out := make(map[string]version.Constraint, len(conflicts))
+	for name, raw := range conflicts {
+		if raw == "" {
+			continue
+		}
+		c, err := version.ParseConstraint(raw)
+		if err != nil {
+			continue
+		}
+		out[name] = c
+	}
+	return out
+}
+
+func (r *resolver) providedVersion(entry packagist.VersionEntry, virtual string) (providedVersion, bool) {
+	key := entry.Name + "\x00" + entry.Version + "\x00" + virtual
+	if pv, ok := r.providedVersionCache[key]; ok {
+		return pv, true
+	}
+	raw := entry.Provide[virtual]
+	if raw == "" {
+		raw = entry.Replace[virtual]
+	}
+	if raw == "" {
+		return providedVersion{}, false
+	}
+	if raw == "*" {
+		pv := providedVersion{any: true}
+		r.providedVersionCache[key] = pv
+		return pv, true
+	}
+	v, err := version.Parse(raw)
 	if err != nil {
-		return "", false
+		pv := providedVersion{}
+		r.providedVersionCache[key] = pv
+		return pv, true
 	}
-
-	if !constraint.Matches(v) {
-		return "", false
-	}
-
-	return fmt.Sprintf("root package conflicts with %s@%s via constraint %s", candidate.Name, candidate.Version, constraintStr), true
+	pv := providedVersion{hasValue: true, value: v}
+	r.providedVersionCache[key] = pv
+	return pv, true
 }
 
 func parseStability(s string) version.Stability {
