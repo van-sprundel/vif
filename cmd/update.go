@@ -21,34 +21,40 @@ import (
 func newUpdateCmd() *cobra.Command {
 	var verbose bool
 	var noAutoloader bool
+	var profile bool
 
 	cmd := &cobra.Command{
 		Use:          "update [packages...]",
 		Short:        "Resolve dependencies and update composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdate(cmd.Context(), args, verbose, noAutoloader)
+			return runUpdate(cmd.Context(), args, verbose, noAutoloader, profile)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
+	cmd.Flags().BoolVar(&profile, "profile", false, "print per-phase timings and slowest packages")
 
 	return cmd
 }
 
-func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloader bool) error {
+func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloader bool, profile bool) error {
 	start := time.Now()
 	w := os.Stderr
 
+	parseComposerStart := time.Now()
 	cj, err := composer.Parse("composer.json")
 	if err != nil {
 		return fmt.Errorf("failed to read composer.json: %w", err)
 	}
+	parseComposerDuration := time.Since(parseComposerStart)
 	fmt.Fprintf(w, "Resolving dependencies for %s...\n", cj.Name)
 
 	var lockedEntries map[string]packagist.VersionEntry
 	var locked map[string]string
+	lockfileDuration := time.Duration(0)
+	lockfileReadStart := time.Now()
 	if existingLock, err := lockfile.Parse("composer.lock"); err == nil {
 		lockedEntries = existingLock.LockedEntries()
 
@@ -73,7 +79,9 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	} else if len(packages) > 0 {
 		return fmt.Errorf("cannot partially update without an existing composer.lock")
 	}
+	lockfileDuration = time.Since(lockfileReadStart)
 
+	cacheInitStart := time.Now()
 	cacheDir, err := cacheDirectory()
 	if err != nil {
 		return fmt.Errorf("cache directory: %w", err)
@@ -83,21 +91,28 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 		return fmt.Errorf("cache init: %w", err)
 	}
 	defer c.Close()
+	cacheInitDuration := time.Since(cacheInitStart)
 
+	metadataClientStart := time.Now()
 	client, err := metadataClient(cj, c)
 	if err != nil {
 		return err
 	}
+	metadataClientDuration := time.Since(metadataClientStart)
+
+	restrictionsStart := time.Now()
 	restrictedPackages, restriction, err := resolveRestrictedPackages(ctx, client, cj)
 	if err != nil {
 		return err
 	}
+	restrictionsDuration := time.Since(restrictionsStart)
 
 	if len(packages) > 0 {
 		fmt.Fprintf(w, "Partially updating: %s\n", formatPackageList(packages))
 	}
 
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
+	resolveStart := time.Now()
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
 		RestrictedPackages: restrictedPackages,
 		Restriction:        restriction,
@@ -110,20 +125,47 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	if err != nil {
 		return fmt.Errorf("resolve: %w", err)
 	}
+	resolveDuration := time.Since(resolveStart)
 
 	fmt.Fprintf(w, "Resolved %d packages\n", len(resolved))
 
-	if err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c); err != nil {
+	installProfile, err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c, profile)
+	if err != nil {
 		return err
 	}
 
 	lockPath := "composer.lock"
+	lockfileWriteStart := time.Now()
 	if err := lockfile.Generate(lockPath, resolved, cj); err != nil {
 		return fmt.Errorf("write lockfile: %w", err)
 	}
+	lockfileWriteDuration := time.Since(lockfileWriteStart)
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
 
 	ui.PrintSummary(w, len(resolved), start)
+	if profile {
+		sections := []ui.ProfileSection{
+			{Name: "parse composer.json", Duration: parseComposerDuration},
+			{Name: "read lockfile", Duration: lockfileDuration},
+			{Name: "init cache", Duration: cacheInitDuration},
+			{Name: "init metadata client", Duration: metadataClientDuration},
+			{Name: "resolve restrictions", Duration: restrictionsDuration},
+			{Name: "resolve", Duration: resolveDuration},
+			{Name: "write lockfile", Duration: lockfileWriteDuration},
+		}
+		var slowPackages []ui.ProfilePackage
+		if installProfile != nil {
+			sections = append(sections,
+				ui.ProfileSection{Name: "download", Duration: installProfile.Download},
+				ui.ProfileSection{Name: "install", Duration: installProfile.Install},
+			)
+			if !noAutoloader {
+				sections = append(sections, ui.ProfileSection{Name: "autoload", Duration: installProfile.Autoload})
+			}
+			slowPackages = installProfile.SlowPackages
+		}
+		ui.PrintProfile(w, time.Since(start), sections, slowPackages)
+	}
 
 	return nil
 }
