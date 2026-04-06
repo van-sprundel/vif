@@ -87,7 +87,7 @@ Executed in  113.39 secs    fish           external
 Resolving dependencies for drupal-composer/drupal-project...
 Resolving [396]
 Resolving done (0 packages, 85.87s)
-resolve: resolver: no version of dflydev/dot-access-configuration, drupal/console, drupal/console-core, guzzlehttp/guzzle, oomphinc/composer-installers-extender, ...  could satisfy all constraints
+resolve: resolver: no version of drupal/core-recommended could satisfy all constraints
 
 ________________________________________________________
 Executed in  85.93 secs    fish           external
