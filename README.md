@@ -2,6 +2,8 @@
 
 A package manager for PHP similar to [Composer](https://getcomposer.org/)
 
+> Note: If it wasn't obvious, this project is not even in alpha state, since we're still missing a bunch of commands. I'd appreciate it if you ran `vif update` against your php project and tell me if it matches composer. The more debug info, the better!
+
 ## Background
 
 I recently got a job where I had to use PHP again. Think old Drupal and Symfony projects that now need to be refactored. 
