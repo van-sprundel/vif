@@ -24,7 +24,9 @@ I've seen what [bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/) have d
 
 I do not expect this project to be succesful in any way. It's more a way to prove me wrong how complex the issue of "resolving+installing packages" can get.
 
-Also, LLMs were only used for doing some of the source gathering. I am not planning to use LLMs to code
+Also, LLMs were only used for doing some of the source gathering. I am not planning to use LLMs to code.
+
+^ I ended up writing the bench and compat harness with Claude, since I wasn't sure how to fairly compare Composer against Vif.
 
 ## Showcase
 
