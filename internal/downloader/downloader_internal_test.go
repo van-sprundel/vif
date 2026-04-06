@@ -125,6 +125,16 @@ func TestIsRetryableStatus(t *testing.T) {
 	}
 }
 
+func TestVerifyDistShasumUnsupportedLength(t *testing.T) {
+	err := verifyDistShasum("vendor/pkg", []byte("archive"), "abc123")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "unsupported shasum length") {
+		t.Fatalf("got %q, want unsupported shasum length hint", err)
+	}
+}
+
 func makeTarGz(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	return makeTarGzWithPrefix(t, "", files)

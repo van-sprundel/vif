@@ -3,6 +3,7 @@ package resolver
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -94,6 +95,10 @@ type pubGrubSolver struct {
 
 	solution pgPartialSolution
 
+	rootReqs []requirement
+	debug    bool
+	trace    []string
+
 	incompatibilities []*pgIncompatibility
 	incompatByPkg     map[string][]*pgIncompatibility
 
@@ -113,6 +118,8 @@ func (r *resolver) solvePubGrub(s *state, reqs []requirement) bool {
 		r:               r,
 		s:               s,
 		solution:        newPGPartialSolution(),
+		rootReqs:        append([]requirement(nil), reqs...),
+		debug:           os.Getenv("VIF_RESOLVER_TRACE") != "",
 		incompatByPkg:   make(map[string][]*pgIncompatibility),
 		pending:         make(map[string]pgPendingMeta),
 		minStabilityByP: make(map[string]version.Stability),
@@ -331,6 +338,7 @@ func (pg *pubGrubSolver) resolveConflict(conflict *pgIncompatibility) bool {
 		}
 
 		if mostRecent.isDecision {
+			pg.tracef("backtrack to level %d from %s", mostRecent.decisionLevel-1, mostRecent.pkg)
 			pg.backtrackTo(mostRecent.decisionLevel - 1)
 			pg.addIncompatibility(current)
 			return true
@@ -355,21 +363,61 @@ func (pg *pubGrubSolver) resolveConflict(conflict *pgIncompatibility) bool {
 }
 
 func (pg *pubGrubSolver) reportConflict(allPkgs map[string]struct{}) {
+	if pg.r.lastConflict != nil {
+		if pg.debug && len(pg.trace) > 0 {
+			pg.r.lastConflict.reason += " | trail: " + strings.Join(pg.trace, " -> ")
+			if stack := pg.decisionStackString(); stack != "" {
+				pg.r.lastConflict.reason += " | decisions: " + stack
+			}
+		}
+		return
+	}
 	pkgs := make([]string, 0, len(allPkgs))
 	for p := range allPkgs {
 		pkgs = append(pkgs, p)
 	}
 	sort.Strings(pkgs)
 	msg := fmt.Sprintf("no version of %s could satisfy all constraints", strings.Join(pkgs, ", "))
+	if pg.debug && len(pg.trace) > 0 {
+		msg += " | trail: " + strings.Join(pg.trace, " -> ")
+		if stack := pg.decisionStackString(); stack != "" {
+			msg += " | decisions: " + stack
+		}
+	}
 	for _, p := range pkgs {
 		pg.r.recordConflict(p, version.Constraint{}, msg)
 	}
 }
 
+func (pg *pubGrubSolver) tracef(format string, args ...any) {
+	if !pg.debug {
+		return
+	}
+	pg.trace = append(pg.trace, fmt.Sprintf(format, args...))
+	if len(pg.trace) > 40 {
+		pg.trace = pg.trace[len(pg.trace)-40:]
+	}
+}
+
+func (pg *pubGrubSolver) decisionStackString() string {
+	if !pg.debug || len(pg.decisions) == 0 {
+		return ""
+	}
+	start := 0
+	if len(pg.decisions) > 80 {
+		start = len(pg.decisions) - 80
+	}
+	parts := make([]string, 0, len(pg.decisions)-start)
+	for _, d := range pg.decisions[start:] {
+		parts = append(parts, fmt.Sprintf("%d:%s@%s", d.level, d.pkg, d.cand.entry.Version))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // resolvePGIncompatibilities combines two incompatibilities by resolving out
-// the shared package. For any other package appearing in both, intersect the
-// version sets. This is the PubGrub resolution rule — analogous to resolution
-// in propositional logic.
+// the shared package. For any other package appearing in both, union the
+// version sets: (p in A) OR (p in B) is equivalent to p being in A ∪ B.
+// This matches clause resolution with our term encoding.
 func resolvePGIncompatibilities(a, b *pgIncompatibility, pkg string) *pgIncompatibility {
 	terms := make(map[string]pgTerm)
 
@@ -385,7 +433,7 @@ func resolvePGIncompatibilities(a, b *pgIncompatibility, pkg string) *pgIncompat
 			continue
 		}
 		if existing, ok := terms[t.pkg]; ok {
-			terms[t.pkg] = pgTerm{pkg: t.pkg, set: existing.set.Intersect(t.set)}
+			terms[t.pkg] = pgTerm{pkg: t.pkg, set: existing.set.Union(t.set)}
 		} else {
 			terms[t.pkg] = t
 		}
@@ -470,6 +518,26 @@ truncate:
 		}
 		pg.s.registerProviders(d.cand.entry)
 	}
+
+	pg.rebuildPendingState()
+}
+
+func (pg *pubGrubSolver) rebuildPendingState() {
+	pg.pending = make(map[string]pgPendingMeta)
+	pg.minStabilityByP = make(map[string]version.Stability)
+
+	for _, req := range pg.rootReqs {
+		pg.markPending(req.name, req.dev)
+		pg.updateMinStability(req.name, req.constraint.EffectiveStability(pg.r.minimumStability))
+	}
+
+	for _, d := range pg.decisions {
+		parent := pg.pending[d.pkg]
+		for _, dep := range d.cand.dependencies {
+			pg.markPending(dep.name, parent.dev)
+			pg.updateMinStability(dep.name, dep.constraint.EffectiveStability(pg.r.minimumStability))
+		}
+	}
 }
 
 func (pg *pubGrubSolver) allPendingSatisfied() bool {
@@ -517,6 +585,18 @@ func (pg *pubGrubSolver) requirementSatisfied(name string) bool {
 	return false
 }
 
+func (pg *pubGrubSolver) hasOtherUnsatisfiedPending(current string) bool {
+	for name := range pg.pending {
+		if name == current || pkg.IsPlatformPackage(name) {
+			continue
+		}
+		if !pg.requirementSatisfied(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	names := make([]string, 0, len(pg.pending))
 	for name := range pg.pending {
@@ -544,6 +624,8 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 			continue
 		}
 
+		allowed := pg.solution.allowedSet(name)
+
 		minStability := pg.r.minimumStability
 		if s, ok := pg.minStabilityByP[name]; ok {
 			minStability = s
@@ -551,6 +633,14 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 		candidates, err := pg.r.getCandidates(name, minStability)
 		if err != nil {
 			if errors.Is(err, packagist.ErrPackageNotFound) {
+				if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(name) {
+					pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", name))
+					pg.addIncompatibility(&pgIncompatibility{
+						terms: []pgTerm{{pkg: name, set: allowed}},
+					})
+					*queue = append(*queue, name)
+					return true, "", ""
+				}
 				missingOnly = name
 				continue
 			}
@@ -559,12 +649,19 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 			continue
 		}
 		if len(candidates) == 0 {
+			if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(name) {
+				pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", name, stabilityString(minStability)))
+				pg.addIncompatibility(&pgIncompatibility{
+					terms: []pgTerm{{pkg: name, set: allowed}},
+				})
+				*queue = append(*queue, name)
+				return true, "", ""
+			}
 			pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", name, stabilityString(minStability)))
 			unsat = name
 			continue
 		}
 
-		allowed := pg.solution.allowedSet(name)
 		viable := 0
 		for _, c := range candidates {
 			if allowed.Contains(c.version) {
@@ -628,6 +725,7 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 		}
 		pg.solution.decided[best.name] = c.version
 		pg.decisions = append(pg.decisions, pgDecision{pkg: best.name, cand: c, level: level})
+		pg.tracef("decide %s@%s", best.name, c.entry.Version)
 		pg.s.resolved[best.name] = resolvedEntry{
 			entry:     c.entry,
 			version:   c.version,

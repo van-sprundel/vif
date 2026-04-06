@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -44,6 +45,11 @@ func makeZip(t *testing.T, files map[string]string) []byte {
 // sha256hex returns the hex-encoded SHA-256 of data.
 func sha256hex(data []byte) string {
 	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h)
+}
+
+func sha1hex(data []byte) string {
+	h := sha1.Sum(data)
 	return fmt.Sprintf("%x", h)
 }
 
@@ -333,6 +339,44 @@ func TestDownloadShasumMismatch(t *testing.T) {
 
 	if results[0].Err == nil {
 		t.Fatal("expected error for SHA mismatch, got nil")
+	}
+}
+
+func TestDownloadAcceptsComposerSHA1Shasum(t *testing.T) {
+	zipData := makeZip(t, map[string]string{
+		"src/Legacy.php": "<?php class Legacy {}",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	cacheDir := testhelper.TempDir(t, "cache")
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer c.Close()
+
+	packages := []pkg.Package{{
+		Name:    "vendor/legacy",
+		Version: "1.0.0",
+		Dist: pkg.Dist{
+			Type:      "zip",
+			URL:       srv.URL + "/legacy.zip",
+			Reference: "ref",
+			Shasum:    sha1hex(zipData),
+		},
+	}}
+
+	d := downloader.New(c, 1)
+	results, err := d.Download(context.Background(), packages)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("result error: %v", results[0].Err)
 	}
 }
 

@@ -194,6 +194,38 @@ func TestResolveConflictRequiresBacktrack(t *testing.T) {
 	}
 }
 
+func TestResolveBacktrackDropsDependenciesFromRejectedCandidate(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"acme/missing": "^1.0"})
+	reg.add("acme/foo", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 1 {
+		t.Fatalf("got %d packages, want 1: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/foo"].Version != "1.0.0" {
+		t.Fatalf("acme/foo = %q, want 1.0.0", byName["acme/foo"].Version)
+	}
+	if _, ok := byName["acme/missing"]; ok {
+		t.Fatal("acme/missing should not remain required after backtracking")
+	}
+}
+
 func TestResolveHonorsPackageConflicts(t *testing.T) {
 	reg := newRegistry()
 	reg.add("symfony/framework-bundle", "6.4.36", map[string]string{
@@ -395,6 +427,51 @@ func TestResolveLockedMonologBundleKeepsInheritedTransitiveRequirements(t *testi
 	}
 	if byName["monolog/monolog"].Version != "3.10.0" {
 		t.Fatalf("monolog = %q, want 3.10.0", byName["monolog/monolog"].Version)
+	}
+}
+
+func TestResolveDrupalMetaPackagePinsCompatibleTransitives(t *testing.T) {
+	reg := newRegistry()
+	reg.add("drupal/core-recommended", "10.5.6", map[string]string{
+		"drupal/core":      "10.5.6",
+		"asm89/stack-cors": "~v2.3.0",
+		"twig/twig":        "~v3.20.0",
+	})
+	reg.add("drupal/core", "10.5.6", map[string]string{
+		"asm89/stack-cors": "^2.3",
+		"twig/twig":        "^3.15.0",
+	})
+	reg.add("asm89/stack-cors", "v2.4.0", nil)
+	reg.add("asm89/stack-cors", "v2.3.0", nil)
+	reg.add("twig/twig", "v3.21.0", nil)
+	reg.add("twig/twig", "v3.20.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"drupal/core-recommended": "^10.2"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["drupal/core-recommended"].Version != "10.5.6" {
+		t.Fatalf("drupal/core-recommended = %q, want 10.5.6", byName["drupal/core-recommended"].Version)
+	}
+	if byName["drupal/core"].Version != "10.5.6" {
+		t.Fatalf("drupal/core = %q, want 10.5.6", byName["drupal/core"].Version)
+	}
+	if byName["asm89/stack-cors"].Version != "v2.3.0" {
+		t.Fatalf("asm89/stack-cors = %q, want v2.3.0", byName["asm89/stack-cors"].Version)
+	}
+	if byName["twig/twig"].Version != "v3.20.0" {
+		t.Fatalf("twig/twig = %q, want v3.20.0", byName["twig/twig"].Version)
 	}
 }
 
