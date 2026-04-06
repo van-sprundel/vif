@@ -1050,6 +1050,10 @@ func (r *resolver) pruneSatisfiedTransitives(s *state, transitive []requirement)
 }
 
 func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constraints []version.Constraint) bool {
+	return r.requirementHasPossibleCandidateWithFetch(s, name, constraints, false)
+}
+
+func (r *resolver) requirementHasPossibleCandidateWithFetch(s *state, name string, constraints []version.Constraint, fetchIfMissing bool) bool {
 	if existing, ok := s.resolved[name]; ok {
 		return matchesAll(existing.version, constraints)
 	}
@@ -1071,6 +1075,21 @@ func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constr
 	}
 
 	cached, ok := r.cacheGet(name)
+	if (!ok || cached.err != nil || len(cached.candidates) == 0) && fetchIfMissing {
+		effectiveStability := r.minimumStability
+		for _, c := range constraints {
+			s := c.EffectiveStability(r.minimumStability)
+			if s < effectiveStability {
+				effectiveStability = s
+			}
+		}
+		candidates, err := r.getCandidates(name, effectiveStability)
+		if err != nil {
+			// A missing package can still be satisfied later via provide/replace.
+			return errors.Is(err, packagist.ErrPackageNotFound)
+		}
+		return r.candidateSliceHasPossibleCandidate(s, name, constraints, candidates)
+	}
 	if !ok || cached.err != nil || len(cached.candidates) == 0 {
 		// Unknown at this branch (e.g. provided by an unresolved package later):
 		// do not prune unless impossibility is proven.
@@ -1087,6 +1106,10 @@ func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constr
 
 	candidates := filterByStability(cached.candidates, effectiveStability)
 	candidates = preferLocked(r.filterCandidates(name, candidates), r.locked[name])
+	return r.candidateSliceHasPossibleCandidate(s, name, constraints, candidates)
+}
+
+func (r *resolver) candidateSliceHasPossibleCandidate(s *state, name string, constraints []version.Constraint, candidates []candidate) bool {
 	for _, c := range candidates {
 		if !matchesAll(c.version, constraints) {
 			continue

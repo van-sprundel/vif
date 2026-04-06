@@ -40,6 +40,8 @@ type pgPendingMeta struct {
 	dev bool
 }
 
+const earlyDependencyViabilityThreshold = 10
+
 type pgPartialSolution struct {
 	assignments []pgAssignment
 	allowed     map[string]version.VersionSet
@@ -105,6 +107,7 @@ type pubGrubSolver struct {
 	decisions []pgDecision
 
 	pending         map[string]pgPendingMeta
+	rootPkgs        map[string]struct{}
 	minStabilityByP map[string]version.Stability
 	candidateSets   map[string]version.VersionSet
 
@@ -122,6 +125,7 @@ func (r *resolver) solvePubGrub(s *state, reqs []requirement) bool {
 		debug:           os.Getenv("VIF_RESOLVER_TRACE") != "",
 		incompatByPkg:   make(map[string][]*pgIncompatibility),
 		pending:         make(map[string]pgPendingMeta),
+		rootPkgs:        make(map[string]struct{}),
 		minStabilityByP: make(map[string]version.Stability),
 		candidateSets:   make(map[string]version.VersionSet),
 		conflictPkgs:    make(map[string]struct{}),
@@ -170,6 +174,7 @@ func (pg *pubGrubSolver) solve() bool {
 
 func (pg *pubGrubSolver) seedRootRequirements(reqs []requirement) {
 	for _, req := range reqs {
+		pg.rootPkgs[req.name] = struct{}{}
 		pg.markPending(req.name, req.dev)
 		pg.updateMinStability(req.name, req.constraint.EffectiveStability(pg.r.minimumStability))
 
@@ -604,18 +609,8 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	}
 	sort.Strings(names)
 
-	type pendingChoice struct {
-		name       string
-		minStab    version.Stability
-		candidates []candidate
-		allowed    version.VersionSet
-		viable     int
-		depCount   int
-	}
-
-	missingOnly := ""
-	unsat := ""
-	var best *pendingChoice
+	bestName := ""
+	bestScore := int(^uint(0) >> 1)
 	for _, name := range names {
 		if pg.requirementSatisfied(name) {
 			continue
@@ -623,119 +618,103 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 		if pkg.IsPlatformPackage(name) {
 			continue
 		}
-
-		allowed := pg.solution.allowedSet(name)
-
-		minStability := pg.r.minimumStability
-		if s, ok := pg.minStabilityByP[name]; ok {
-			minStability = s
+		_, isRoot := pg.rootPkgs[name]
+		score := pg.r.requirementScore(pg.s, requirement{name: name, root: isRoot}, nil)
+		if bestName == "" || score < bestScore || (score == bestScore && name < bestName) {
+			bestName = name
+			bestScore = score
 		}
-		candidates, err := pg.r.getCandidates(name, minStability)
-		if err != nil {
-			if errors.Is(err, packagist.ErrPackageNotFound) {
-				if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(name) {
-					pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", name))
-					pg.addIncompatibility(&pgIncompatibility{
-						terms: []pgTerm{{pkg: name, set: allowed}},
-					})
-					*queue = append(*queue, name)
-					return true, "", ""
-				}
-				missingOnly = name
-				continue
-			}
-			pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("could not fetch package %s: %v", name, err))
-			unsat = name
-			continue
-		}
-		if len(candidates) == 0 {
-			if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(name) {
-				pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", name, stabilityString(minStability)))
+	}
+
+	if bestName == "" {
+		return false, "", ""
+	}
+
+	bestAllowed := pg.solution.allowedSet(bestName)
+	minStability := pg.r.minimumStability
+	if s, ok := pg.minStabilityByP[bestName]; ok {
+		minStability = s
+	}
+
+	candidates, err := pg.r.getCandidates(bestName, minStability)
+	if err != nil {
+		if errors.Is(err, packagist.ErrPackageNotFound) {
+			if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(bestName) {
+				pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", bestName))
 				pg.addIncompatibility(&pgIncompatibility{
-					terms: []pgTerm{{pkg: name, set: allowed}},
+					terms: []pgTerm{{pkg: bestName, set: bestAllowed}},
 				})
-				*queue = append(*queue, name)
+				*queue = append(*queue, bestName)
 				return true, "", ""
 			}
-			pg.r.recordConflict(name, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", name, stabilityString(minStability)))
-			unsat = name
-			continue
+			return false, bestName, ""
 		}
+		pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("could not fetch package %s: %v", bestName, err))
+		return false, "", bestName
+	}
+	if len(candidates) == 0 {
+		if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(bestName) {
+			pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", bestName, stabilityString(minStability)))
+			pg.addIncompatibility(&pgIncompatibility{
+				terms: []pgTerm{{pkg: bestName, set: bestAllowed}},
+			})
+			*queue = append(*queue, bestName)
+			return true, "", ""
+		}
+		pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("no versions of %s found matching stability %s", bestName, stabilityString(minStability)))
+		return false, "", bestName
+	}
 
-		viable := 0
-		for _, c := range candidates {
-			if allowed.Contains(c.version) {
-				viable++
-			}
-		}
-
-		depCount := 0
-		if len(candidates) > 0 {
-			depCount = len(candidates[0].dependencies)
-		}
-
-		choice := &pendingChoice{
-			name:       name,
-			minStab:    minStability,
-			candidates: candidates,
-			allowed:    allowed,
-			viable:     viable,
-			depCount:   depCount,
-		}
-		if best == nil ||
-			choice.viable < best.viable ||
-			(choice.viable == best.viable && choice.depCount > best.depCount) ||
-			(choice.viable == best.viable && choice.depCount == best.depCount && choice.name < best.name) {
-			best = choice
+	if len(candidates[0].dependencies) > earlyDependencyViabilityThreshold {
+		candidates = pg.pruneCandidatesByDependencyViability(candidates)
+		if len(candidates) == 0 {
+			pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("no versions of %s have satisfiable direct dependencies", bestName))
+			return false, "", bestName
 		}
 	}
 
-	if best == nil {
-		return false, missingOnly, unsat
-	}
-
-	bestUniverse := candidateVersionSet(best.candidates)
-	bestAllowed := best.allowed.Intersect(bestUniverse)
-	availability, ok := pg.candidateSets[best.name]
+	bestUniverse := candidateVersionSet(candidates)
+	bestAllowed = bestAllowed.Intersect(bestUniverse)
+	availability, ok := pg.candidateSets[bestName]
 	if !ok || !setsEqual(availability, bestUniverse) {
-		pg.candidateSets[best.name] = bestUniverse
+		pg.candidateSets[bestName] = bestUniverse
 		pg.addIncompatibility(&pgIncompatibility{
-			terms: []pgTerm{{pkg: best.name, set: bestUniverse.Complement()}},
+			terms: []pgTerm{{pkg: bestName, set: bestUniverse.Complement()}},
 		})
 	}
-	changed, conflict := pg.solution.constrain(best.name, bestUniverse, false, nil)
+	changed, conflict := pg.solution.constrain(bestName, bestUniverse, false, nil)
 	if conflict {
-		*queue = append(*queue, best.name)
+		*queue = append(*queue, bestName)
 		return true, "", ""
 	}
 	if changed {
-		*queue = append(*queue, best.name)
+		*queue = append(*queue, bestName)
 	}
 
-	for _, c := range best.candidates {
+	for _, c := range candidates {
 		if !bestAllowed.Contains(c.version) {
 			continue
 		}
 
 		level := len(pg.decisions) + 1
 		pg.solution.level = level
-		_, conflict := pg.solution.constrain(best.name, version.Singleton(c.version), true, nil)
+		_, conflict := pg.solution.constrain(bestName, version.Singleton(c.version), true, nil)
 		if conflict {
 			continue
 		}
-		pg.solution.decided[best.name] = c.version
-		pg.decisions = append(pg.decisions, pgDecision{pkg: best.name, cand: c, level: level})
-		pg.tracef("decide %s@%s", best.name, c.entry.Version)
-		pg.s.resolved[best.name] = resolvedEntry{
+		pg.solution.decided[bestName] = c.version
+		pg.decisions = append(pg.decisions, pgDecision{pkg: bestName, cand: c, level: level})
+		pg.tracef("decide %s@%s", bestName, c.entry.Version)
+		pg.s.resolved[bestName] = resolvedEntry{
 			entry:     c.entry,
 			version:   c.version,
 			conflicts: c.conflicts,
-			dev:       pg.pending[best.name].dev,
+			dev:       pg.pending[bestName].dev,
 		}
 		pg.s.registerProviders(c.entry)
-		*queue = append(*queue, best.name)
+		*queue = append(*queue, bestName)
 
-		pg.emitCandidateIncompatibilities(best.name, c)
+		pg.emitCandidateIncompatibilities(bestName, c)
 		return true, "", ""
 	}
 
@@ -743,9 +722,9 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	// single-term incompatibility saying the allowed set is impossible,
 	// then let propagation + resolveConflict handle backjumping.
 	pg.addIncompatibility(&pgIncompatibility{
-		terms: []pgTerm{{pkg: best.name, set: best.allowed}},
+		terms: []pgTerm{{pkg: bestName, set: bestAllowed}},
 	})
-	*queue = append(*queue, best.name)
+	*queue = append(*queue, bestName)
 	return true, "", ""
 }
 
@@ -755,6 +734,28 @@ func candidateVersionSet(candidates []candidate) version.VersionSet {
 		set = set.Union(version.Singleton(c.version))
 	}
 	return set
+}
+
+func (pg *pubGrubSolver) pruneCandidatesByDependencyViability(candidates []candidate) []candidate {
+	pruned := make([]candidate, 0, len(candidates))
+	for _, cand := range candidates {
+		if pg.candidateDependenciesRemainViable(cand) {
+			pruned = append(pruned, cand)
+		}
+	}
+	return pruned
+}
+
+func (pg *pubGrubSolver) candidateDependenciesRemainViable(cand candidate) bool {
+	for _, dep := range cand.dependencies {
+		if pkg.IsPlatformPackage(dep.name) {
+			continue
+		}
+		if !pg.r.requirementHasPossibleCandidateWithFetch(pg.s, dep.name, []version.Constraint{dep.constraint}, true) {
+			return false
+		}
+	}
+	return true
 }
 
 func (pg *pubGrubSolver) emitCandidateIncompatibilities(name string, c candidate) {
