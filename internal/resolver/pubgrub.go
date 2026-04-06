@@ -101,6 +101,7 @@ type pubGrubSolver struct {
 
 	pending         map[string]pgPendingMeta
 	minStabilityByP map[string]version.Stability
+	candidateSets   map[string]version.VersionSet
 
 	// conflictPkgs accumulates all packages seen during conflict resolution
 	// across the entire solve, for better error messages.
@@ -115,6 +116,7 @@ func (r *resolver) solvePubGrub(s *state, reqs []requirement) bool {
 		incompatByPkg:   make(map[string][]*pgIncompatibility),
 		pending:         make(map[string]pgPendingMeta),
 		minStabilityByP: make(map[string]version.Stability),
+		candidateSets:   make(map[string]version.VersionSet),
 		conflictPkgs:    make(map[string]struct{}),
 	}
 	pg.seedRootRequirements(reqs)
@@ -179,7 +181,6 @@ func (pg *pubGrubSolver) seedRootRequirements(reqs []requirement) {
 
 	for name, c := range pg.r.rootConflicts {
 		set := version.ConstraintVersionSet(c)
-		pg.pending[name] = pgPendingMeta{}
 		pg.addIncompatibility(&pgIncompatibility{
 			terms: []pgTerm{{pkg: name, set: set}},
 		})
@@ -483,12 +484,7 @@ func (pg *pubGrubSolver) requirementSatisfied(name string) bool {
 		if hasReal {
 			pv, ok := pg.r.providedVersion(resolved.entry, name)
 			if ok {
-				if pv.any {
-					return true
-				}
-				if pv.hasValue {
-					return allowed.Contains(pv.value)
-				}
+				return providedAllowsSet(pv, allowed)
 			}
 		}
 	}
@@ -512,8 +508,18 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	}
 	sort.Strings(names)
 
+	type pendingChoice struct {
+		name       string
+		minStab    version.Stability
+		candidates []candidate
+		allowed    version.VersionSet
+		viable     int
+		depCount   int
+	}
+
 	missingOnly := ""
 	unsat := ""
+	var best *pendingChoice
 	for _, name := range names {
 		if pg.requirementSatisfied(name) {
 			continue
@@ -543,42 +549,98 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 		}
 
 		allowed := pg.solution.allowedSet(name)
+		viable := 0
 		for _, c := range candidates {
-			if !allowed.Contains(c.version) {
-				continue
+			if allowed.Contains(c.version) {
+				viable++
 			}
-
-			level := len(pg.decisions) + 1
-			pg.solution.level = level
-			_, conflict := pg.solution.constrain(name, version.Singleton(c.version), true, nil)
-			if conflict {
-				continue
-			}
-			pg.solution.decided[name] = c.version
-			pg.decisions = append(pg.decisions, pgDecision{pkg: name, cand: c, level: level})
-			pg.s.resolved[name] = resolvedEntry{
-				entry:     c.entry,
-				version:   c.version,
-				conflicts: c.conflicts,
-				dev:       pg.pending[name].dev,
-			}
-			pg.s.registerProviders(c.entry)
-			*queue = append(*queue, name)
-
-			pg.emitCandidateIncompatibilities(name, c)
-			return true, "", ""
 		}
-		// No candidate in the allowed set works. In PubGrub, we add a
-		// single-term incompatibility saying the allowed set is impossible,
-		// then let propagation + resolveConflict handle backjumping.
+
+		depCount := 0
+		if len(candidates) > 0 {
+			depCount = len(candidates[0].dependencies)
+		}
+
+		choice := &pendingChoice{
+			name:       name,
+			minStab:    minStability,
+			candidates: candidates,
+			allowed:    allowed,
+			viable:     viable,
+			depCount:   depCount,
+		}
+		if best == nil ||
+			choice.viable < best.viable ||
+			(choice.viable == best.viable && choice.depCount > best.depCount) ||
+			(choice.viable == best.viable && choice.depCount == best.depCount && choice.name < best.name) {
+			best = choice
+		}
+	}
+
+	if best == nil {
+		return false, missingOnly, unsat
+	}
+
+	bestUniverse := candidateVersionSet(best.candidates)
+	bestAllowed := best.allowed.Intersect(bestUniverse)
+	availability, ok := pg.candidateSets[best.name]
+	if !ok || !setsEqual(availability, bestUniverse) {
+		pg.candidateSets[best.name] = bestUniverse
 		pg.addIncompatibility(&pgIncompatibility{
-			terms: []pgTerm{{pkg: name, set: allowed}},
+			terms: []pgTerm{{pkg: best.name, set: bestUniverse.Complement()}},
 		})
-		*queue = append(*queue, name)
+	}
+	changed, conflict := pg.solution.constrain(best.name, bestUniverse, false, nil)
+	if conflict {
+		*queue = append(*queue, best.name)
+		return true, "", ""
+	}
+	if changed {
+		*queue = append(*queue, best.name)
+	}
+
+	for _, c := range best.candidates {
+		if !bestAllowed.Contains(c.version) {
+			continue
+		}
+
+		level := len(pg.decisions) + 1
+		pg.solution.level = level
+		_, conflict := pg.solution.constrain(best.name, version.Singleton(c.version), true, nil)
+		if conflict {
+			continue
+		}
+		pg.solution.decided[best.name] = c.version
+		pg.decisions = append(pg.decisions, pgDecision{pkg: best.name, cand: c, level: level})
+		pg.s.resolved[best.name] = resolvedEntry{
+			entry:     c.entry,
+			version:   c.version,
+			conflicts: c.conflicts,
+			dev:       pg.pending[best.name].dev,
+		}
+		pg.s.registerProviders(c.entry)
+		*queue = append(*queue, best.name)
+
+		pg.emitCandidateIncompatibilities(best.name, c)
 		return true, "", ""
 	}
 
-	return false, missingOnly, unsat
+	// No candidate in the allowed set works. In PubGrub, we add a
+	// single-term incompatibility saying the allowed set is impossible,
+	// then let propagation + resolveConflict handle backjumping.
+	pg.addIncompatibility(&pgIncompatibility{
+		terms: []pgTerm{{pkg: best.name, set: bestAllowed}},
+	})
+	*queue = append(*queue, best.name)
+	return true, "", ""
+}
+
+func candidateVersionSet(candidates []candidate) version.VersionSet {
+	set := version.EmptySet()
+	for _, c := range candidates {
+		set = set.Union(version.Singleton(c.version))
+	}
+	return set
 }
 
 func (pg *pubGrubSolver) emitCandidateIncompatibilities(name string, c candidate) {
@@ -611,7 +673,6 @@ func (pg *pubGrubSolver) emitCandidateIncompatibilities(name string, c candidate
 				{pkg: dep.name, set: conflictSet},
 			},
 		})
-		pg.pending[dep.name] = pgPendingMeta{}
 	}
 
 	addProvided := func(virtual, raw string) {

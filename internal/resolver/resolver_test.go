@@ -782,6 +782,42 @@ func TestResolveDoesNotDeferPackagistNotFound(t *testing.T) {
 	// terminal error for the missing package, not that acme/other is never looked up.
 }
 
+func TestResolveUsesLockedEntryWhenPackageIsNotFound(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{"missing/private-package": "^1.0"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	lockedEntry := packagist.VersionEntry{
+		Name:    "missing/private-package",
+		Version: "1.0.0",
+	}
+
+	resolved, err := resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		Locked: map[string]string{
+			"missing/private-package": "1.0.0",
+		},
+		LockedEntries: map[string]packagist.VersionEntry{
+			"missing/private-package": lockedEntry,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["missing/private-package"].Version != "1.0.0" {
+		t.Fatalf("missing/private-package = %q, want 1.0.0", byName["missing/private-package"].Version)
+	}
+}
+
 // helpers
 
 func indexByName(pkgs []resolver.ResolvedPackage) map[string]resolver.ResolvedPackage {
@@ -903,6 +939,33 @@ func TestResolveProvideWildcard(t *testing.T) {
 	}
 }
 
+func TestResolveProvideRange(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/consumer", "1.0.0", map[string]string{"acme/contract": "^3.0"})
+	reg.addFull("acme/provider", "1.0.0", nil, map[string]string{"acme/contract": "1.0|2.0|3.0"}, nil, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/provider": "^1.0",
+			"acme/consumer": "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 2 {
+		t.Fatalf("got %d packages, want 2: %v", len(resolved), names(resolved))
+	}
+}
+
 func TestResolveDefersNotFoundUntilProviderResolved(t *testing.T) {
 	// acme/app requires:
 	// - zz/virtual-contract (missing on registry)
@@ -998,6 +1061,109 @@ func TestResolveHonorsRootConflicts(t *testing.T) {
 	byName := indexByName(resolved)
 	if byName["acme/lib"].Version != "1.9.0" {
 		t.Fatalf("acme/lib = %q, want 1.9.0", byName["acme/lib"].Version)
+	}
+}
+
+func TestResolveConflictDoesNotRequireConflictedPackage(t *testing.T) {
+	reg := newRegistry()
+	reg.addFull("acme/plugin", "1.0.0", nil, nil, nil, map[string]string{
+		"acme/legacy-plugin": "*",
+	})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/plugin": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 1 {
+		t.Fatalf("got %d packages, want 1: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["acme/plugin"]; !ok {
+		t.Fatal("missing acme/plugin")
+	}
+	if _, ok := byName["acme/legacy-plugin"]; ok {
+		t.Fatal("acme/legacy-plugin should not be resolved")
+	}
+}
+
+func TestResolveUnusedRootConflictDoesNotRequirePackage(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", nil)
+	reg.add("acme/forbidden", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		Conflict:         map[string]string{"acme/forbidden": "*"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if len(resolved) != 1 {
+		t.Fatalf("got %d packages, want 1: %v", len(resolved), names(resolved))
+	}
+
+	byName := indexByName(resolved)
+	if _, ok := byName["acme/app"]; !ok {
+		t.Fatal("missing acme/app")
+	}
+	if _, ok := byName["acme/forbidden"]; ok {
+		t.Fatal("acme/forbidden should not be resolved")
+	}
+}
+
+func TestResolveExhaustedFiniteCandidateUniverse(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{"acme/lib": "^1.0"})
+	reg.addFull("acme/ban-old", "1.0.0", nil, nil, nil, map[string]string{
+		"acme/lib": "1.0.0",
+	})
+	reg.addFull("acme/ban-new", "1.0.0", nil, nil, nil, map[string]string{
+		"acme/lib": "1.1.0",
+	})
+	reg.add("acme/lib", "1.1.0", nil)
+	reg.add("acme/lib", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name: "test/project",
+		Require: map[string]string{
+			"acme/app":     "^1.0",
+			"acme/ban-old": "^1.0",
+			"acme/ban-new": "^1.0",
+		},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "acme/lib") {
+		t.Fatalf("error should mention acme/lib, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "private/custom repositories") {
+		t.Fatalf("unexpected missing-package error: %v", err)
 	}
 }
 

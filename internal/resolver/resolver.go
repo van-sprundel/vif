@@ -283,6 +283,8 @@ type providedVersion struct {
 	any      bool
 	hasValue bool
 	value    version.Version
+	hasSet   bool
+	set      version.VersionSet
 }
 
 // recordConflict records a conflict, keeping the deepest (most specific) one.
@@ -357,8 +359,8 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 	if prov, ok := s.providers[req.name]; ok {
 		existing, hasReal := s.resolved[prov.realName]
 		if hasReal {
-			if pv, ok := r.providedVersion(existing.entry, req.name); ok && pv.hasValue {
-				if !matchesAll(pv.value, pendingConstraints) {
+			if pv, ok := r.providedVersion(existing.entry, req.name); ok {
+				if !providedMatchesAll(pv, pendingConstraints) {
 					r.recordConflict(req.name, req.constraint,
 						fmt.Sprintf("%s provides %s which does not match %s", prov.realName, req.name, req.constraint))
 					return false
@@ -581,7 +583,7 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 			if !ok || pv.any {
 				return -1
 			}
-			if pv.hasValue && matchesAll(pv.value, pending) {
+			if providedMatchesAll(pv, pending) {
 				return -1
 			}
 			return 0
@@ -694,6 +696,22 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 
 	versions, err := r.client.GetPackage(r.ctx, name)
 	if err != nil {
+		if errors.Is(err, packagist.ErrPackageNotFound) {
+			if entry, ok := r.lockedEntries[name]; ok {
+				if v, parseErr := version.Parse(entry.Version); parseErr == nil {
+					candidates := []candidate{{
+						entry:        entry,
+						version:      v,
+						dependencies: parseDependencyRequirements(entry),
+						conflicts:    parseConflictRequirements(entry),
+					}}
+					sortCandidates(candidates, r.preferStable)
+					r.versionCache[name] = candidateCacheEntry{candidates: candidates}
+					filtered := filterByStability(candidates, effectiveStability)
+					return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
+				}
+			}
+		}
 		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
 		r.versionCache[name] = candidateCacheEntry{err: cachedErr}
 		return nil, cachedErr
@@ -842,6 +860,31 @@ func matchesAll(v version.Version, constraints []version.Constraint) bool {
 	return true
 }
 
+func providedMatchesAll(pv providedVersion, constraints []version.Constraint) bool {
+	if pv.any || (!pv.hasValue && !pv.hasSet) {
+		return true
+	}
+	if pv.hasValue {
+		return matchesAll(pv.value, constraints)
+	}
+	for _, c := range constraints {
+		if !pv.set.AllowsAny(version.ConstraintVersionSet(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+func providedAllowsSet(pv providedVersion, set version.VersionSet) bool {
+	if pv.any || (!pv.hasValue && !pv.hasSet) {
+		return true
+	}
+	if pv.hasValue {
+		return set.Contains(pv.value)
+	}
+	return pv.set.AllowsAny(set)
+}
+
 func (r *resolver) conflictsWithResolved(cand candidate, s *state) (string, bool) {
 	if reason, ok := rootConflictReason(cand, r.rootConflicts); ok {
 		return reason, true
@@ -886,10 +929,10 @@ func (r *resolver) requiresAlreadyResolvedConflict(c candidate, s *state) (strin
 				continue
 			}
 			pv, ok := r.providedVersion(existing.entry, depName)
-			if !ok || pv.any || !pv.hasValue {
+			if !ok {
 				continue
 			}
-			if !constraint.Matches(pv.value) {
+			if !providedMatchesAll(pv, []version.Constraint{constraint}) {
 				return fmt.Sprintf("%s@%s requires %s %s but %s provides %s", c.entry.Name, c.entry.Version, depName, depConstraintStr, prov.realName, depName), true
 			}
 			continue
@@ -943,14 +986,11 @@ func (r *resolver) pruneSatisfiedTransitives(s *state, transitive []requirement)
 			existing, hasReal := s.resolved[prov.realName]
 			if hasReal {
 				pv, ok := r.providedVersion(existing.entry, dep.name)
-				if ok && pv.hasValue {
-					if !dep.constraint.Matches(pv.value) {
-						return nil, false
-					}
+				if ok && providedMatchesAll(pv, []version.Constraint{dep.constraint}) {
 					continue
 				}
-				if ok && pv.any {
-					continue
+				if ok {
+					return nil, false
 				}
 			}
 		}
@@ -981,13 +1021,10 @@ func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constr
 			return true
 		}
 		pv, ok := r.providedVersion(existing.entry, name)
-		if !ok || pv.any {
+		if !ok {
 			return true
 		}
-		if !pv.hasValue {
-			return true
-		}
-		return matchesAll(pv.value, constraints)
+		return providedMatchesAll(pv, constraints)
 	}
 
 	if r.rootSatisfies(name, constraints) {
@@ -1148,6 +1185,21 @@ func (r *resolver) providedVersion(entry packagist.VersionEntry, virtual string)
 	}
 	if raw == "*" {
 		pv := providedVersion{any: true}
+		r.providedVersionCache[key] = pv
+		return pv, true
+	}
+	if raw == "self.version" {
+		raw = entry.Version
+	}
+	if c, err := version.ParseConstraint(raw); err == nil {
+		pv := providedVersion{
+			hasSet: true,
+			set:    version.ConstraintVersionSet(c),
+		}
+		if v, err := version.Parse(raw); err == nil {
+			pv.hasValue = true
+			pv.value = v
+		}
 		r.providedVersionCache[key] = pv
 		return pv, true
 	}
