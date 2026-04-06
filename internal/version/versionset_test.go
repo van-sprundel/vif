@@ -51,6 +51,18 @@ func TestConstraintVersionSetContains(t *testing.T) {
 			contains:   []string{"1.0.1", "dev-main"},
 			excludes:   []string{"1.0.0"},
 		},
+		{
+			name:       "gte-excludes-dev-branches",
+			constraint: ">=1.0.0",
+			contains:   []string{"1.0.0", "2.0.0"},
+			excludes:   []string{"dev-main", "dev-master"},
+		},
+		{
+			name:       "lt-excludes-dev-branches",
+			constraint: "<2.0.0",
+			contains:   []string{"1.0.0"},
+			excludes:   []string{"dev-main", "dev-master"},
+		},
 	}
 
 	for _, tc := range tests {

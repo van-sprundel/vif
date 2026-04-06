@@ -818,6 +818,33 @@ func TestResolveUsesLockedEntryWhenPackageIsNotFound(t *testing.T) {
 	}
 }
 
+func TestResolveSharedDependencyRequiredByProdAndDevIsProd(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/prod", "1.0.0", map[string]string{"acme/shared": "^1.0"})
+	reg.add("zz/devtool", "1.0.0", map[string]string{"acme/shared": "^1.0"})
+	reg.add("acme/shared", "1.0.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/prod": "^1.0"},
+		RequireDev:       map[string]string{"zz/devtool": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/shared"].Dev {
+		t.Fatalf("acme/shared should be treated as a production dependency when required by both prod and dev")
+	}
+}
+
 // helpers
 
 func indexByName(pkgs []resolver.ResolvedPackage) map[string]resolver.ResolvedPackage {

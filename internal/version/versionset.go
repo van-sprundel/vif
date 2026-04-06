@@ -106,22 +106,22 @@ func boundToVersionSet(b bound) VersionSet {
 	case OpGte:
 		return VersionSet{
 			intervals:     []vsInterval{{lo: vsBound{kind: boundIncluded, version: b.version}, hi: vsBound{kind: boundUnbounded}}},
-			complementDev: true, // dev branches are below all numeric, so >=anything excludes them... unless the bound itself is dev-level
+			complementDev: false,
 		}
 	case OpGt:
 		return VersionSet{
 			intervals:     []vsInterval{{lo: vsBound{kind: boundExcluded, version: b.version}, hi: vsBound{kind: boundUnbounded}}},
-			complementDev: true,
+			complementDev: false,
 		}
 	case OpLte:
 		return VersionSet{
 			intervals:     []vsInterval{{lo: vsBound{kind: boundUnbounded}, hi: vsBound{kind: boundIncluded, version: b.version}}},
-			complementDev: true, // include all dev branches (they're below everything)
+			complementDev: false,
 		}
 	case OpLt:
 		return VersionSet{
 			intervals:     []vsInterval{{lo: vsBound{kind: boundUnbounded}, hi: vsBound{kind: boundExcluded, version: b.version}}},
-			complementDev: true,
+			complementDev: false,
 		}
 	}
 	return EmptySet()

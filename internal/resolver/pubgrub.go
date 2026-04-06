@@ -163,7 +163,7 @@ func (pg *pubGrubSolver) solve() bool {
 
 func (pg *pubGrubSolver) seedRootRequirements(reqs []requirement) {
 	for _, req := range reqs {
-		pg.pending[req.name] = pgPendingMeta{dev: req.dev}
+		pg.markPending(req.name, req.dev)
 		pg.updateMinStability(req.name, req.constraint.EffectiveStability(pg.r.minimumStability))
 
 		set := version.ConstraintVersionSet(req.constraint)
@@ -185,6 +185,22 @@ func (pg *pubGrubSolver) seedRootRequirements(reqs []requirement) {
 			terms: []pgTerm{{pkg: name, set: set}},
 		})
 	}
+}
+
+func (pg *pubGrubSolver) markPending(name string, dev bool) {
+	if meta, ok := pg.pending[name]; ok {
+		wasDev := meta.dev
+		meta.dev = meta.dev && dev
+		pg.pending[name] = meta
+		if wasDev && !meta.dev {
+			if resolved, ok := pg.s.resolved[name]; ok {
+				resolved.dev = false
+				pg.s.resolved[name] = resolved
+			}
+		}
+		return
+	}
+	pg.pending[name] = pgPendingMeta{dev: dev}
 }
 
 func (pg *pubGrubSolver) initialQueue() []string {
@@ -629,7 +645,7 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	// single-term incompatibility saying the allowed set is impossible,
 	// then let propagation + resolveConflict handle backjumping.
 	pg.addIncompatibility(&pgIncompatibility{
-		terms: []pgTerm{{pkg: best.name, set: bestAllowed}},
+		terms: []pgTerm{{pkg: best.name, set: best.allowed}},
 	})
 	*queue = append(*queue, best.name)
 	return true, "", ""
@@ -658,7 +674,7 @@ func (pg *pubGrubSolver) emitCandidateIncompatibilities(name string, c candidate
 			},
 		})
 		parent := pg.pending[name]
-		pg.pending[dep.name] = pgPendingMeta{dev: parent.dev}
+		pg.markPending(dep.name, parent.dev)
 		pg.updateMinStability(dep.name, dep.constraint.EffectiveStability(pg.r.minimumStability))
 	}
 
