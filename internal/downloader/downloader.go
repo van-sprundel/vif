@@ -7,6 +7,7 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -127,11 +128,11 @@ func (d *Downloader) downloadOne(ctx context.Context, p pkg.Package) Result {
 		return finish(Result{Package: p, Err: fmt.Errorf("download %s: %w", p.Name, err)})
 	}
 
-	// Verify SHA if provided.
+	// Composer dist shasum is historically SHA-1, but some repositories emit
+	// SHA-256. Choose the algorithm from the hash width instead of assuming.
 	if p.Dist.Shasum != "" {
-		got := fmt.Sprintf("%x", sha256.Sum256(body))
-		if got != p.Dist.Shasum {
-			return finish(Result{Package: p, Err: fmt.Errorf("sha256 mismatch for %s: got %s, want %s", p.Name, got, p.Dist.Shasum)})
+		if err := verifyDistShasum(p.Name, body, p.Dist.Shasum); err != nil {
+			return finish(Result{Package: p, Err: err})
 		}
 	}
 
@@ -256,6 +257,27 @@ func (d *Downloader) fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("fetch %s: %d attempts failed: %w", rawURL, maxRetries, lastErr)
+}
+
+func verifyDistShasum(packageName string, body []byte, want string) error {
+	want = strings.ToLower(strings.TrimSpace(want))
+
+	switch len(want) {
+	case 40:
+		got := fmt.Sprintf("%x", sha1.Sum(body))
+		if got != want {
+			return fmt.Errorf("sha1 mismatch for %s: got %s, want %s", packageName, got, want)
+		}
+		return nil
+	case 64:
+		got := fmt.Sprintf("%x", sha256.Sum256(body))
+		if got != want {
+			return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", packageName, got, want)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported shasum length for %s: %d", packageName, len(want))
+	}
 }
 
 func isRetryableStatus(code int) bool {

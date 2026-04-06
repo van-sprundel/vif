@@ -3,6 +3,8 @@ package packagist_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -616,6 +618,57 @@ func TestChainSkipsAuthRequiredRepository(t *testing.T) {
 	}
 	if len(versions) != 3 {
 		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+}
+
+type timeoutFetcher struct{}
+
+func (timeoutFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
+	return nil, fmt.Errorf("packagist: fetch include: %w", context.DeadlineExceeded)
+}
+
+func TestChainSkipsTransientTimeoutRepository(t *testing.T) {
+	publicResp := sampleResponse()
+	publicData, _ := json.Marshal(publicResp)
+
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/acme/foo.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(publicData)
+	}))
+	defer publicSrv.Close()
+
+	chain := packagist.NewChain(
+		timeoutFetcher{},
+		packagist.NewClient(publicSrv.URL),
+	)
+
+	versions, err := chain.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+}
+
+type notFoundFetcher struct{}
+
+func (notFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
+	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
+}
+
+func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
+	chain := packagist.NewChain(timeoutFetcher{}, notFoundFetcher{})
+
+	_, err := chain.GetPackage(context.Background(), "missing/pkg")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 
