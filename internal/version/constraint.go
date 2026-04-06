@@ -37,6 +37,20 @@ type bound struct {
 	version Version
 }
 
+// BoundOp is the exported bound operator type.
+type BoundOp = boundOp
+
+// ExportedBound is an exported, immutable representation of a bound.
+type ExportedBound struct {
+	Op  BoundOp
+	Ver Version
+}
+
+// ExportedGroup is an exported, immutable representation of an AND-group.
+type ExportedGroup struct {
+	Bounds []ExportedBound
+}
+
 // NoStabilityOverride indicates no per-constraint stability flag was specified.
 const NoStabilityOverride = -1
 
@@ -425,6 +439,25 @@ func (c Constraint) String() string {
 		return c.text
 	}
 	return renderConstraint(c.groups)
+}
+
+// ExportGroups exports the parsed OR/AND structure as plain immutable data.
+func (c Constraint) ExportGroups() []ExportedGroup {
+	if len(c.groups) == 0 {
+		return nil
+	}
+	out := make([]ExportedGroup, 0, len(c.groups))
+	for _, g := range c.groups {
+		eg := ExportedGroup{Bounds: make([]ExportedBound, 0, len(g.bounds))}
+		for _, b := range g.bounds {
+			eg.Bounds = append(eg.Bounds, ExportedBound{
+				Op:  b.op,
+				Ver: b.version,
+			})
+		}
+		out = append(out, eg)
+	}
+	return out
 }
 
 func renderConstraint(groups []constraintGroup) string {
