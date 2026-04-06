@@ -122,6 +122,149 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 	return results
 }
 
+// prefetchInto performs the same BFS crawl as prefetchMetadata but populates
+// the shared version cache incrementally as each package is fetched, instead of
+// collecting all results first. This allows the solver to start working
+// concurrently using cache entries that are ready while remaining packages are
+// still being fetched.
+func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []string,
+	cache map[string]candidateCacheEntry, cacheMu *sync.RWMutex,
+	preferStable bool, lockedEntries map[string]packagist.VersionEntry,
+	progress func(string), lookupDone func(string, time.Duration, error)) {
+
+	var mu sync.Mutex
+	queued := make(map[string]bool, len(rootNames)*4)
+
+	work := make(chan string, 512)
+	var outstanding sync.WaitGroup
+
+	var enqueue func(name string)
+	enqueue = func(name string) {
+		mu.Lock()
+		if queued[name] {
+			mu.Unlock()
+			return
+		}
+		queued[name] = true
+		mu.Unlock()
+		outstanding.Add(1)
+		go func() { work <- name }()
+	}
+
+	var wg sync.WaitGroup
+	for range defaultPrefetchWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for name := range work {
+				if ctx.Err() != nil {
+					outstanding.Done()
+					continue
+				}
+				if progress != nil {
+					progress(name)
+				}
+				start := time.Now()
+				versions, err := client.GetPackage(ctx, name)
+				if lookupDone != nil {
+					lookupDone(name, time.Since(start), err)
+				}
+
+				// Populate cache immediately as each result arrives.
+				if entry := buildCacheEntry(name, versions, err, preferStable, lockedEntries); entry != nil {
+					cacheMu.Lock()
+					if _, exists := cache[name]; !exists {
+						cache[name] = *entry
+					}
+					cacheMu.Unlock()
+				}
+
+				// Discover transitive dependencies and enqueue new ones.
+				if err == nil {
+					scan := versions
+					if len(scan) > prefetchDependencyScanVersionLimit {
+						scan = scan[:prefetchDependencyScanVersionLimit]
+					}
+					for _, v := range scan {
+						for dep := range v.NonPlatformRequire() {
+							enqueue(dep)
+						}
+					}
+				}
+
+				outstanding.Done()
+			}
+		}()
+	}
+
+	for _, name := range rootNames {
+		enqueue(name)
+	}
+
+	go func() {
+		outstanding.Wait()
+		close(work)
+	}()
+
+	wg.Wait()
+}
+
+// buildCacheEntry converts a single package fetch result into a candidateCacheEntry.
+// Returns nil for ErrPackageNotFound without a locked fallback (virtual packages
+// handled by the solver via provide/replace).
+func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, preferStable bool, lockedEntries map[string]packagist.VersionEntry) *candidateCacheEntry {
+	if err != nil {
+		if errors.Is(err, packagist.ErrPackageNotFound) {
+			// Try locked entry for VCS-only packages.
+			if entry, ok := lockedEntries[name]; ok {
+				if v, parseErr := version.Parse(entry.Version); parseErr == nil {
+					candidates := []candidate{{
+						entry:        entry,
+						version:      v,
+						dependencies: parseDependencyRequirements(entry),
+						conflicts:    parseConflictRequirements(entry),
+					}}
+					sortCandidates(candidates, preferStable)
+					return &candidateCacheEntry{candidates: candidates}
+				}
+			}
+			return nil
+		}
+		return &candidateCacheEntry{err: err}
+	}
+
+	var candidates []candidate
+	for _, entry := range versions {
+		v, parseErr := version.Parse(entry.Version)
+		if parseErr != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			entry:        entry,
+			version:      v,
+			dependencies: parseDependencyRequirements(entry),
+			conflicts:    parseConflictRequirements(entry),
+		})
+	}
+
+	// Inject locked entry if Packagist returned no usable versions.
+	if len(candidates) == 0 {
+		if entry, ok := lockedEntries[name]; ok {
+			if v, parseErr := version.Parse(entry.Version); parseErr == nil {
+				candidates = []candidate{{
+					entry:        entry,
+					version:      v,
+					dependencies: parseDependencyRequirements(entry),
+					conflicts:    parseConflictRequirements(entry),
+				}}
+			}
+		}
+	}
+
+	sortCandidates(candidates, preferStable)
+	return &candidateCacheEntry{candidates: candidates}
+}
+
 // populateVersionCache converts prefetch results into candidateCacheEntry values
 // and stores them in the provided cache map.
 //

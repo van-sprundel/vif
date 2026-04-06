@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -69,16 +70,23 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		rootNames = append(rootNames, name)
 	}
 
-	// Prefetch all reachable metadata in parallel before the sequential solve
-	// phase, so getCandidates hits the cache for every package.
-	prefetched := prefetchMetadata(ctx, client, rootNames, progress, opts.LookupDone)
+	// Shared version cache with mutex for concurrent prefetch + solve access.
+	versionCache := make(map[string]candidateCacheEntry, len(rootNames)*4)
+	var versionCacheMu sync.RWMutex
 
-	versionCache := make(map[string]candidateCacheEntry, len(prefetched))
-	populateVersionCache(versionCache, prefetched, cj.PreferStable)
-
-	// Inject locked entries for packages with no Packagist versions (VCS-only packages).
-	// This allows the resolver to keep them from the lockfile instead of failing.
-	injectLockedEntries(versionCache, prefetched, opts.LockedEntries, cj.PreferStable)
+	// Start prefetch in background — it populates the cache incrementally as
+	// each package's metadata arrives. The solver starts immediately and uses
+	// cache hits from prefetch; on cache miss it fetches on demand. This means
+	// the solver can detect conflicts early without waiting for the entire
+	// dependency graph to be fetched.
+	prefetchCtx, prefetchCancel := context.WithCancel(ctx)
+	var prefetchWg sync.WaitGroup
+	prefetchWg.Add(1)
+	go func() {
+		defer prefetchWg.Done()
+		prefetchInto(prefetchCtx, client, rootNames, versionCache, &versionCacheMu,
+			cj.PreferStable, opts.LockedEntries, progress, opts.LookupDone)
+	}()
 
 	r := &resolver{
 		ctx:              ctx,
@@ -94,8 +102,9 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		rootSatisfiers:   buildRootSatisfiers(cj.Provide, cj.Replace),
 		rootConflicts:    buildRootConflicts(cj.Conflict),
 		versionCache:     versionCache,
-		// progress is nil during solve to avoid double-reporting; all lookups
-		// were already reported during the prefetch pass above.
+		versionCacheMu:   &versionCacheMu,
+		// progress is nil during solve to avoid double-reporting; prefetch
+		// already reports each package lookup via the progress callback.
 		progress: nil,
 		// solveProgress reports selected requirements during the backtracking phase.
 		solveProgress:        opts.SolveProgress,
@@ -104,6 +113,8 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	if opts.Restriction != "" && len(opts.RestrictedPackages) > 0 {
 		c, err := version.ParseConstraint(opts.Restriction)
 		if err != nil {
+			prefetchCancel()
+			prefetchWg.Wait()
 			return nil, fmt.Errorf("resolver: parse restriction %q: %w", opts.Restriction, err)
 		}
 		r.restriction = c
@@ -116,6 +127,8 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	for name, constraint := range cj.NonPlatformRequire() {
 		c, err := version.ParseConstraint(constraint)
 		if err != nil {
+			prefetchCancel()
+			prefetchWg.Wait()
 			return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
 		}
 		reqs = append(reqs, requirement{name: name, constraint: c, dev: false, root: true})
@@ -123,6 +136,8 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	for name, constraint := range cj.NonPlatformRequireDev() {
 		c, err := version.ParseConstraint(constraint)
 		if err != nil {
+			prefetchCancel()
+			prefetchWg.Wait()
 			return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
 		}
 		reqs = append(reqs, requirement{name: name, constraint: c, dev: true, root: true})
@@ -133,8 +148,14 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 
 	state := newState()
 	if !r.solvePubGrub(state, reqs) {
+		prefetchCancel()
+		prefetchWg.Wait()
 		return nil, r.buildError(state)
 	}
+
+	// Solve succeeded — stop any remaining prefetch work.
+	prefetchCancel()
+	prefetchWg.Wait()
 
 	// Collect results.
 	result := make([]ResolvedPackage, 0, len(state.resolved))
@@ -265,6 +286,7 @@ type resolver struct {
 	hasRestriction       bool
 	restrictedPackages   map[string]struct{}
 	versionCache         map[string]candidateCacheEntry
+	versionCacheMu       *sync.RWMutex // shared with background prefetch goroutine
 	lastConflict         *conflict
 	terminalErr          error
 	progress             func(string)
@@ -597,7 +619,7 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 	score -= len(pending) * 10
 	score -= len(s.constraints[req.name]) * 10
 
-	if cached, ok := r.versionCache[req.name]; ok {
+	if cached, ok := r.cacheGet(req.name); ok {
 		if cached.err != nil {
 			return 0
 		}
@@ -663,6 +685,23 @@ func (r *resolver) checkContext() bool {
 	return true
 }
 
+func (r *resolver) cacheGet(name string) (candidateCacheEntry, bool) {
+	if r.versionCacheMu != nil {
+		r.versionCacheMu.RLock()
+		defer r.versionCacheMu.RUnlock()
+	}
+	entry, ok := r.versionCache[name]
+	return entry, ok
+}
+
+func (r *resolver) cacheSet(name string, entry candidateCacheEntry) {
+	if r.versionCacheMu != nil {
+		r.versionCacheMu.Lock()
+		defer r.versionCacheMu.Unlock()
+	}
+	r.versionCache[name] = entry
+}
+
 func transitiveReqs(c candidate, dev bool) []requirement {
 	if len(c.dependencies) == 0 {
 		return nil
@@ -681,7 +720,7 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	if !r.checkContext() {
 		return nil, r.terminalErr
 	}
-	if cached, ok := r.versionCache[name]; ok {
+	if cached, ok := r.cacheGet(name); ok {
 		if cached.err != nil {
 			return nil, cached.err
 		}
@@ -706,14 +745,14 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 						conflicts:    parseConflictRequirements(entry),
 					}}
 					sortCandidates(candidates, r.preferStable)
-					r.versionCache[name] = candidateCacheEntry{candidates: candidates}
+					r.cacheSet(name, candidateCacheEntry{candidates: candidates})
 					filtered := filterByStability(candidates, effectiveStability)
 					return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
 				}
 			}
 		}
 		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
-		r.versionCache[name] = candidateCacheEntry{err: cachedErr}
+		r.cacheSet(name, candidateCacheEntry{err: cachedErr})
 		return nil, cachedErr
 	}
 
@@ -749,7 +788,7 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	sortCandidates(candidates, r.preferStable)
 
 	// Cache ALL versions (no stability filtering), then filter for this request.
-	r.versionCache[name] = candidateCacheEntry{candidates: candidates}
+	r.cacheSet(name, candidateCacheEntry{candidates: candidates})
 
 	filtered := filterByStability(candidates, effectiveStability)
 	return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
@@ -1031,7 +1070,7 @@ func (r *resolver) requirementHasPossibleCandidate(s *state, name string, constr
 		return true
 	}
 
-	cached, ok := r.versionCache[name]
+	cached, ok := r.cacheGet(name)
 	if !ok || cached.err != nil || len(cached.candidates) == 0 {
 		// Unknown at this branch (e.g. provided by an unresolved package later):
 		// do not prune unless impossibility is proven.
