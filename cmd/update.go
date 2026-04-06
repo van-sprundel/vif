@@ -56,6 +56,7 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	var lockedEntries map[string]packagist.VersionEntry
 	var locked map[string]string
 	var fixed map[string]string
+	var oldLock map[string]string // preserved for delta reporting
 	lockfileDuration := time.Duration(0)
 	lockfileReadStart := time.Now()
 	if existingLock, err := lockfile.Parse("composer.lock"); err == nil {
@@ -66,6 +67,10 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 		}
 		for _, p := range existingLock.PackagesDev {
 			fixed[p.Name] = p.Version
+		}
+		oldLock = make(map[string]string, len(fixed))
+		for k, v := range fixed {
+			oldLock[k] = v
 		}
 
 		if len(packages) > 0 {
@@ -184,6 +189,30 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	resolveDuration := time.Since(resolveStart)
 
 	fmt.Fprintf(w, "Resolved %d packages\n", len(resolved))
+
+	// Print lock file deltas when an existing lock was present.
+	if len(oldLock) > 0 {
+		newResolved := make(map[string]string, len(resolved))
+		for _, rp := range resolved {
+			newResolved[rp.Name] = rp.Version
+		}
+		var added, updated, removed int
+		for _, rp := range resolved {
+			if oldVer, ok := oldLock[rp.Name]; !ok {
+				added++
+			} else if oldVer != rp.Version {
+				updated++
+			}
+		}
+		for name := range oldLock {
+			if _, ok := newResolved[name]; !ok {
+				removed++
+			}
+		}
+		unchanged := len(resolved) - added - updated
+		fmt.Fprintf(w, "Lock file operations: %d installs, %d updates, %d removals, %d unchanged\n",
+			added, updated, removed, unchanged)
+	}
 
 	installProfile, err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c, profile)
 	if err != nil {

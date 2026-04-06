@@ -167,8 +167,13 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 
 	fmt.Fprintf(w, "Installing to %s...\n", vendorDir)
 	installStart := time.Now()
-	if _, err := inst.Install(prodPkgs, devPkgs, vendorDir, rootMeta); err != nil {
+	installStats, err := inst.Install(prodPkgs, devPkgs, vendorDir, rootMeta)
+	if err != nil {
 		return nil, fmt.Errorf("install: %w", err)
+	}
+	if installStats.Installed > 0 || installStats.Updated > 0 || installStats.Removed > 0 {
+		fmt.Fprintf(w, "  %d installed, %d updated, %d removed, %d skipped\n",
+			installStats.Installed, installStats.Updated, installStats.Removed, installStats.Skipped)
 	}
 	if prof != nil {
 		prof.Install = time.Since(installStart)
