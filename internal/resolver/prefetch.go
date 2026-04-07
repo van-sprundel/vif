@@ -129,8 +129,9 @@ func prefetchMetadata(ctx context.Context, client packagist.Fetcher, rootNames [
 // still being fetched.
 func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []string,
 	cache map[string]candidateCacheEntry, cacheMu *sync.RWMutex,
-	preferStable bool, lockedEntries map[string]packagist.VersionEntry,
+	preferStable bool, minimumStability version.Stability, lockedEntries map[string]packagist.VersionEntry,
 	progress func(string), lookupDone func(string, time.Duration, error)) {
+	includeDev := minimumStability == version.Dev
 
 	var mu sync.Mutex
 	queued := make(map[string]bool, len(rootNames)*4)
@@ -165,13 +166,13 @@ func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []str
 					progress(name)
 				}
 				start := time.Now()
-				versions, err := client.GetPackage(ctx, name)
+				versions, err := fetchPackageVersions(ctx, client, name, includeDev)
 				if lookupDone != nil {
 					lookupDone(name, time.Since(start), err)
 				}
 
 				// Populate cache immediately as each result arrives.
-				if entry := buildCacheEntry(name, versions, err, preferStable, lockedEntries); entry != nil {
+				if entry := buildCacheEntry(name, versions, err, preferStable, includeDev, lockedEntries); entry != nil {
 					cacheMu.Lock()
 					if _, exists := cache[name]; !exists {
 						cache[name] = *entry
@@ -212,7 +213,7 @@ func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []str
 // buildCacheEntry converts a single package fetch result into a candidateCacheEntry.
 // Returns nil for ErrPackageNotFound without a locked fallback (virtual packages
 // handled by the solver via provide/replace).
-func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, preferStable bool, lockedEntries map[string]packagist.VersionEntry) *candidateCacheEntry {
+func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, preferStable bool, includeDev bool, lockedEntries map[string]packagist.VersionEntry) *candidateCacheEntry {
 	if err != nil {
 		if errors.Is(err, packagist.ErrPackageNotFound) {
 			// Try locked entry for VCS-only packages.
@@ -225,12 +226,12 @@ func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, 
 						conflicts:    parseConflictRequirements(entry),
 					}}
 					sortCandidates(candidates, preferStable)
-					return &candidateCacheEntry{candidates: candidates}
+					return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
 				}
 			}
 			return nil
 		}
-		return &candidateCacheEntry{err: err}
+		return &candidateCacheEntry{err: err, hasDev: includeDev}
 	}
 
 	var candidates []candidate
@@ -262,7 +263,7 @@ func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, 
 	}
 
 	sortCandidates(candidates, preferStable)
-	return &candidateCacheEntry{candidates: candidates}
+	return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
 }
 
 // populateVersionCache converts prefetch results into candidateCacheEntry values

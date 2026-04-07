@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -116,5 +117,16 @@ func TestProfileDuration(t *testing.T) {
 		if got != tt.want {
 			t.Fatalf("%s: profileDuration(%s) = %q, want %q", tt.name, tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestFormatLookupLog(t *testing.T) {
+	if got, want := formatLookupLog("acme/foo", 1500*time.Millisecond, nil), "  Lookup acme/foo (1.50s)"; got != want {
+		t.Fatalf("formatLookupLog success = %q, want %q", got, want)
+	}
+
+	err := errors.New("timeout")
+	if got, want := formatLookupLog("acme/foo", 500*time.Millisecond, err), "  Lookup acme/foo (500ms, error: timeout)"; got != want {
+		t.Fatalf("formatLookupLog error = %q, want %q", got, want)
 	}
 }

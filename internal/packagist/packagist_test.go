@@ -219,6 +219,48 @@ func TestClientGetPackageMergesDevVersionsDeduplicates(t *testing.T) {
 	}
 }
 
+func TestClientGetPackageWithDevCanSkipDevEndpoint(t *testing.T) {
+	stableResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/foo": {
+				{Name: "acme/foo", Version: "1.0.0", Type: "library"},
+			},
+		},
+	}
+	stableData, _ := json.Marshal(stableResp)
+
+	var devRequests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			w.Write(stableData)
+		case "/p2/acme/foo~dev.json":
+			devRequests++
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	devClient, ok := interface{}(client).(packagist.DevFetcher)
+	if !ok {
+		t.Fatal("client should implement DevFetcher")
+	}
+
+	versions, err := devClient.GetPackageWithDev(context.Background(), "acme/foo", false)
+	if err != nil {
+		t.Fatalf("GetPackageWithDev: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("got %d versions, want 1", len(versions))
+	}
+	if devRequests != 0 {
+		t.Fatalf("dev endpoint called %d times, want 0", devRequests)
+	}
+}
+
 func TestClientGetPackageObjectShapedP2Response(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/p2/urbanheroes-symfony/uh-enhanced-security-bundle.json" {

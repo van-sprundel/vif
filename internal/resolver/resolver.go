@@ -85,7 +85,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	go func() {
 		defer prefetchWg.Done()
 		prefetchInto(prefetchCtx, client, rootNames, versionCache, &versionCacheMu,
-			cj.PreferStable, opts.LockedEntries, progress, opts.LookupDone)
+			cj.PreferStable, minimumStability, opts.LockedEntries, progress, opts.LookupDone)
 	}()
 
 	r := &resolver{
@@ -196,6 +196,7 @@ type candidate struct {
 type candidateCacheEntry struct {
 	candidates []candidate
 	err        error
+	hasDev     bool
 }
 
 type dependencyRequirement struct {
@@ -720,20 +721,23 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	if !r.checkContext() {
 		return nil, r.terminalErr
 	}
+	includeDev := effectiveStability == version.Dev
 	if cached, ok := r.cacheGet(name); ok {
-		if cached.err != nil {
+		if cached.err != nil && (cached.hasDev || !includeDev) {
 			return nil, cached.err
 		}
-		// Filter by effective stability (which may differ from global minimumStability
-		// if the requirement has an @dev/@alpha/etc flag or is a dev-branch constraint).
-		filtered := filterByStability(cached.candidates, effectiveStability)
-		return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
+		if cached.hasDev || !includeDev {
+			// Filter by effective stability (which may differ from global minimumStability
+			// if the requirement has an @dev/@alpha/etc flag or is a dev-branch constraint).
+			filtered := filterByStability(cached.candidates, effectiveStability)
+			return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
+		}
 	}
 	if r.progress != nil {
 		r.progress(name)
 	}
 
-	versions, err := r.client.GetPackage(r.ctx, name)
+	versions, err := fetchPackageVersions(r.ctx, r.client, name, includeDev)
 	if err != nil {
 		if errors.Is(err, packagist.ErrPackageNotFound) {
 			if entry, ok := r.lockedEntries[name]; ok {
@@ -745,14 +749,14 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 						conflicts:    parseConflictRequirements(entry),
 					}}
 					sortCandidates(candidates, r.preferStable)
-					r.cacheSet(name, candidateCacheEntry{candidates: candidates})
+					r.cacheSet(name, candidateCacheEntry{candidates: candidates, hasDev: includeDev})
 					filtered := filterByStability(candidates, effectiveStability)
 					return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
 				}
 			}
 		}
 		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
-		r.cacheSet(name, candidateCacheEntry{err: cachedErr})
+		r.cacheSet(name, candidateCacheEntry{err: cachedErr, hasDev: includeDev})
 		return nil, cachedErr
 	}
 
@@ -788,10 +792,20 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	sortCandidates(candidates, r.preferStable)
 
 	// Cache ALL versions (no stability filtering), then filter for this request.
-	r.cacheSet(name, candidateCacheEntry{candidates: candidates})
+	r.cacheSet(name, candidateCacheEntry{candidates: candidates, hasDev: includeDev})
 
 	filtered := filterByStability(candidates, effectiveStability)
 	return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
+}
+
+func fetchPackageVersions(ctx context.Context, client packagist.Fetcher, name string, includeDev bool) ([]packagist.VersionEntry, error) {
+	if client == nil {
+		return nil, fmt.Errorf("%w: %s", packagist.ErrPackageNotFound, name)
+	}
+	if devClient, ok := client.(packagist.DevFetcher); ok {
+		return devClient.GetPackageWithDev(ctx, name, includeDev)
+	}
+	return client.GetPackage(ctx, name)
 }
 
 // filterByStability returns candidates that meet the minimum stability requirement.

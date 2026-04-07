@@ -228,6 +228,12 @@ type Fetcher interface {
 	GetPackage(context.Context, string) ([]VersionEntry, error)
 }
 
+// DevFetcher optionally allows callers to skip separate ~dev metadata lookups
+// until a package actually needs dev candidates.
+type DevFetcher interface {
+	GetPackageWithDev(context.Context, string, bool) ([]VersionEntry, error)
+}
+
 const defaultHTTPTimeout = 10 * time.Second
 
 // ErrPackageNotFound marks a package as absent from the Packagist registry.
@@ -328,6 +334,12 @@ func isRetryableMetadataStatus(code int) bool {
 // GetPackage fetches all versions of a package from Packagist (stable + dev).
 // Uses ETag-based HTTP caching to avoid redundant downloads.
 func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
+	return c.GetPackageWithDev(ctx, name, true)
+}
+
+// GetPackageWithDev fetches package versions and optionally merges the
+// dedicated ~dev metadata endpoint.
+func (c *Client) GetPackageWithDev(ctx context.Context, name string, includeDev bool) ([]VersionEntry, error) {
 	c.mu.RLock()
 	cached, hasCached := c.cache[name]
 	authErr := c.authErr
@@ -338,21 +350,21 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 	if hasCached && cached.notFound {
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
-	if hasCached && cached.devMerged {
+	if hasCached && (cached.devMerged || !includeDev) {
 		return cached.versions, nil
 	}
 
 	versions, err := c.getPackageP2(ctx, name, cached, hasCached)
 	if err == nil {
-		devVersions := c.fetchP2Dev(ctx, name)
-		merged := mergeVersionEntries(versions, devVersions)
-		c.mu.Lock()
-		entry := c.cache[name]
-		entry.versions = merged
-		entry.devMerged = true
-		c.cache[name] = entry
-		c.mu.Unlock()
-		return merged, nil
+		if !includeDev {
+			c.mu.Lock()
+			entry := c.cache[name]
+			entry.versions = versions
+			c.cache[name] = entry
+			c.mu.Unlock()
+			return versions, nil
+		}
+		return c.mergeDevVersions(ctx, name, versions), nil
 	}
 	if !errors.Is(err, ErrPackageNotFound) {
 		return nil, err
@@ -373,12 +385,25 @@ func (c *Client) GetPackage(ctx context.Context, name string) ([]VersionEntry, e
 		return nil, err
 	}
 
+	c.mu.Lock()
+	c.cache[name] = cacheEntry{versions: versions}
+	c.mu.Unlock()
+	if !includeDev {
+		return versions, nil
+	}
+	return c.mergeDevVersions(ctx, name, versions), nil
+}
+
+func (c *Client) mergeDevVersions(ctx context.Context, name string, versions []VersionEntry) []VersionEntry {
 	devVersions := c.fetchP2Dev(ctx, name)
 	merged := mergeVersionEntries(versions, devVersions)
 	c.mu.Lock()
-	c.cache[name] = cacheEntry{versions: merged, devMerged: true}
+	entry := c.cache[name]
+	entry.versions = merged
+	entry.devMerged = true
+	c.cache[name] = entry
 	c.mu.Unlock()
-	return merged, nil
+	return merged
 }
 
 func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntry, hasCached bool) ([]VersionEntry, error) {

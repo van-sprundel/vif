@@ -19,6 +19,12 @@ func NewChain(sources ...Fetcher) *Chain {
 
 // GetPackage returns the first successful package hit across configured sources.
 func (c *Chain) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
+	return c.GetPackageWithDev(ctx, name, true)
+}
+
+// GetPackageWithDev returns the first successful package hit across configured
+// sources, optionally skipping separate ~dev metadata lookups.
+func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev bool) ([]VersionEntry, error) {
 	var lastNotFound error
 	var lastAuthErr error
 	var lastTransientErr error
@@ -27,7 +33,15 @@ func (c *Chain) GetPackage(ctx context.Context, name string) ([]VersionEntry, er
 		if source == nil {
 			continue
 		}
-		versions, err := source.GetPackage(ctx, name)
+		var (
+			versions []VersionEntry
+			err      error
+		)
+		if devSource, ok := source.(DevFetcher); ok {
+			versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
+		} else {
+			versions, err = source.GetPackage(ctx, name)
+		}
 		if err == nil {
 			return versions, nil
 		}

@@ -8,6 +8,25 @@ import (
 	"github.com/van-sprundel/vif/internal/version"
 )
 
+type devAwareFetcher struct {
+	stableCalls int
+	devCalls    int
+}
+
+func (f *devAwareFetcher) GetPackage(ctx context.Context, name string) ([]packagist.VersionEntry, error) {
+	return f.GetPackageWithDev(ctx, name, true)
+}
+
+func (f *devAwareFetcher) GetPackageWithDev(_ context.Context, name string, includeDev bool) ([]packagist.VersionEntry, error) {
+	f.stableCalls++
+	versions := []packagist.VersionEntry{{Name: name, Version: "1.0.0"}}
+	if includeDev {
+		f.devCalls++
+		versions = append(versions, packagist.VersionEntry{Name: name, Version: "dev-main"})
+	}
+	return versions, nil
+}
+
 func TestPubGrubDecidePicksMostConstrainedPendingPackage(t *testing.T) {
 	parse := func(raw string) version.Version {
 		t.Helper()
@@ -25,7 +44,8 @@ func TestPubGrubDecidePicksMostConstrainedPendingPackage(t *testing.T) {
 	}
 
 	r := &resolver{
-		ctx: context.Background(),
+		ctx:              context.Background(),
+		minimumStability: version.Stable,
 		versionCache: map[string]candidateCacheEntry{
 			"acme/a": {candidates: []candidate{
 				cand("acme/a", "3.0.0"),
@@ -106,5 +126,33 @@ func TestResolvePGIncompatibilitiesUnionsDuplicatePackageTerms(t *testing.T) {
 	}
 	if shared.set.Contains(parseVersion("3.0.0")) {
 		t.Fatal("resolved set should not contain 3.0.0")
+	}
+}
+
+func TestGetCandidatesRefetchesWithDevWhenNeeded(t *testing.T) {
+	fetcher := &devAwareFetcher{}
+	r := &resolver{
+		ctx:          context.Background(),
+		client:       fetcher,
+		versionCache: make(map[string]candidateCacheEntry),
+	}
+
+	stableOnly, err := r.getCandidates("acme/foo", version.Stable)
+	if err != nil {
+		t.Fatalf("stable getCandidates: %v", err)
+	}
+	if len(stableOnly) != 1 {
+		t.Fatalf("stable candidates = %d, want 1", len(stableOnly))
+	}
+
+	withDev, err := r.getCandidates("acme/foo", version.Dev)
+	if err != nil {
+		t.Fatalf("dev getCandidates: %v", err)
+	}
+	if len(withDev) != 2 {
+		t.Fatalf("dev candidates = %d, want 2", len(withDev))
+	}
+	if fetcher.devCalls != 1 {
+		t.Fatalf("dev fetches = %d, want 1", fetcher.devCalls)
 	}
 }

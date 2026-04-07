@@ -135,10 +135,17 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 			progress.Error(fmt.Sprintf("  Solving... last=%s states=%d", name, solveCounter))
 		}
 	}
+	onLookupDone := func(name string, d time.Duration, err error) {
+		if !verbose {
+			return
+		}
+		progress.Error(formatLookupLog(name, d, err))
+	}
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
 		Fixed:         fixed,
 		LockedEntries: lockedEntries,
 		Locked:        locked,
+		LookupDone:    onLookupDone,
 		SolveProgress: onSolveProgress,
 	}, func(name string) {
 		progress.Increment(name)

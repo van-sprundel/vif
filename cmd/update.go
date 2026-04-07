@@ -159,16 +159,18 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	var resolveLookups []ui.ProfilePackage
 	var resolveLookupsMu sync.Mutex
 	onLookupDone := func(name string, d time.Duration, err error) {
-		if !profile {
-			return
+		if verbose {
+			progress.Error(formatLookupLog(name, d, err))
 		}
-		displayName := name
-		if err != nil {
-			displayName = fmt.Sprintf("%s (error)", name)
+		if profile {
+			displayName := name
+			if err != nil {
+				displayName = fmt.Sprintf("%s (error)", name)
+			}
+			resolveLookupsMu.Lock()
+			resolveLookups = append(resolveLookups, ui.ProfilePackage{Name: displayName, Duration: d})
+			resolveLookupsMu.Unlock()
 		}
-		resolveLookupsMu.Lock()
-		resolveLookups = append(resolveLookups, ui.ProfilePackage{Name: displayName, Duration: d})
-		resolveLookupsMu.Unlock()
 	}
 	resolveStart := time.Now()
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
@@ -282,6 +284,13 @@ func profileDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+func formatLookupLog(name string, d time.Duration, err error) string {
+	if err != nil {
+		return fmt.Sprintf("  Lookup %s (%s, error: %v)", name, profileDuration(d), err)
+	}
+	return fmt.Sprintf("  Lookup %s (%s)", name, profileDuration(d))
 }
 
 func resolveRestrictedPackages(ctx context.Context, client packagist.Fetcher, cj *composer.ComposerJSON) (map[string]struct{}, string, error) {
