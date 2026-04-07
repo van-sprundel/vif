@@ -611,6 +611,9 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 			}
 			return 0
 		}
+		// A virtual package tied to an unresolved provider should not be selected
+		// before that real provider has a chance to be decided.
+		return 1 << 20
 	}
 
 	score := 1000
@@ -806,6 +809,37 @@ func fetchPackageVersions(ctx context.Context, client packagist.Fetcher, name st
 		return devClient.GetPackageWithDev(ctx, name, includeDev)
 	}
 	return client.GetPackage(ctx, name)
+}
+
+func (r *resolver) candidateProviders(name string) []string {
+	seen := make(map[string]struct{})
+
+	if r.versionCacheMu != nil {
+		r.versionCacheMu.RLock()
+		defer r.versionCacheMu.RUnlock()
+	}
+
+	for pkgName, cached := range r.versionCache {
+		if cached.err != nil {
+			continue
+		}
+		for _, cand := range cached.candidates {
+			if cand.entry.Provide[name] == "" && cand.entry.Replace[name] == "" {
+				continue
+			}
+			if _, ok := seen[pkgName]; ok {
+				continue
+			}
+			seen[pkgName] = struct{}{}
+		}
+	}
+
+	providers := make([]string, 0, len(seen))
+	for pkgName := range seen {
+		providers = append(providers, pkgName)
+	}
+	sort.Strings(providers)
+	return providers
 }
 
 // filterByStability returns candidates that meet the minimum stability requirement.

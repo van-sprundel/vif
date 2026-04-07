@@ -71,35 +71,3 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 
 	return packagist.NewChain(sources...), nil
 }
-
-func repositoryMatcher(repoURL string) func(string) bool {
-	lowerURL := strings.ToLower(strings.TrimSpace(repoURL))
-
-	switch {
-	case strings.Contains(lowerURL, "packages.drupal.org"):
-		return func(name string) bool {
-			return strings.HasPrefix(name, "drupal/")
-		}
-	case strings.Contains(lowerURL, "asset-packagist.org"):
-		return func(name string) bool {
-			return strings.HasPrefix(name, "bower-asset/") || strings.HasPrefix(name, "npm-asset/")
-		}
-	case strings.Contains(lowerURL, "satis.urban-heroes.nl"),
-		strings.Contains(lowerURL, "gitlab.com/api/v4/group/13017208/-/packages/composer"):
-		return func(name string) bool {
-			return strings.HasPrefix(name, "urbanheroes-")
-		}
-	case strings.Contains(lowerURL, "repo.packagist.org"):
-		return func(name string) bool {
-			if strings.HasPrefix(name, "bower-asset/") || strings.HasPrefix(name, "npm-asset/") {
-				return false
-			}
-			if strings.HasPrefix(name, "urbanheroes-") {
-				return false
-			}
-			return !strings.HasPrefix(name, "drupal/")
-		}
-	default:
-		return nil
-	}
-}

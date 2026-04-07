@@ -639,6 +639,42 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 	candidates, err := pg.r.getCandidates(bestName, minStability)
 	if err != nil {
 		if errors.Is(err, packagist.ErrPackageNotFound) {
+			if providers := pg.r.candidateProviders(bestName); len(providers) > 0 {
+				added := false
+				pendingProvider := ""
+				meta := pg.pending[bestName]
+				for _, providerName := range providers {
+					if resolved, ok := pg.s.resolved[providerName]; ok {
+						pv, provides := pg.r.providedVersion(resolved.entry, bestName)
+						if !provides || !providedAllowsSet(pv, bestAllowed) {
+							continue
+						}
+						// This virtual is already satisfiable by an existing decision.
+						pg.s.providers[bestName] = provider{realName: providerName}
+						*queue = append(*queue, bestName)
+						return true, "", ""
+					}
+					if _, pending := pg.pending[providerName]; pending {
+						if pendingProvider == "" {
+							pendingProvider = providerName
+						}
+						continue
+					}
+					pg.markPending(providerName, meta.dev)
+					*queue = append(*queue, providerName)
+					added = true
+				}
+				if added {
+					return true, "", ""
+				}
+				if pendingProvider != "" {
+					// Keep this virtual tied to a provider that is already pending
+					// so the solver can decide that real package first.
+					pg.s.providers[bestName] = provider{realName: pendingProvider}
+					*queue = append(*queue, pendingProvider)
+					return true, "", ""
+				}
+			}
 			if len(pg.decisions) > 0 && !pg.hasOtherUnsatisfiedPending(bestName) {
 				pg.r.recordConflict(bestName, version.Constraint{}, fmt.Sprintf("resolver: package %s was not found on Packagist; private/custom repositories are not supported yet", bestName))
 				pg.addIncompatibility(&pgIncompatibility{

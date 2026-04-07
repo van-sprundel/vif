@@ -1113,6 +1113,44 @@ func TestResolveDefersNotFoundUntilProviderResolved(t *testing.T) {
 	}
 }
 
+func TestResolvePromotesTransitiveProviderForVirtualPackage(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/app", "1.0.0", map[string]string{
+		"acme/meta":     "^1.0",
+		"acme/consumer": "^1.0",
+	})
+	reg.add("acme/meta", "1.0.0", map[string]string{
+		"acme/provider": "^1.0",
+	})
+	reg.add("acme/consumer", "1.0.0", map[string]string{
+		"zz/virtual-contract": "^1.0",
+	})
+	reg.addFull("acme/provider", "1.0.0", nil, map[string]string{
+		"zz/virtual-contract": "1.0.0",
+	}, nil, nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	for _, want := range []string{"acme/app", "acme/meta", "acme/consumer", "acme/provider"} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("missing %s in resolved set: %v", want, names(resolved))
+		}
+	}
+}
+
 func TestResolveRootReplaceSatisfiesDependency(t *testing.T) {
 	reg := newRegistry()
 	reg.add("symfony/string", "6.4.34", map[string]string{"symfony/polyfill-ctype": "~1.8"})

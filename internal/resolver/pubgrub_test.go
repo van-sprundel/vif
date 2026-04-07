@@ -81,6 +81,189 @@ func TestPubGrubDecidePicksMostConstrainedPendingPackage(t *testing.T) {
 	}
 }
 
+func TestPubGrubDecideUsesResolvedProviderForMissingVirtual(t *testing.T) {
+	parse := func(raw string) version.Version {
+		t.Helper()
+		v, err := version.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse version %q: %v", raw, err)
+		}
+		return v
+	}
+
+	virtualName := "zz/virtual-contract"
+	providerEntry := packagist.VersionEntry{
+		Name:    "acme/provider",
+		Version: "1.0.0",
+		Provide: map[string]string{virtualName: "1.0.0"},
+	}
+
+	r := &resolver{
+		ctx:                  context.Background(),
+		minimumStability:     version.Stable,
+		versionCache:         map[string]candidateCacheEntry{},
+		providedVersionCache: make(map[string]providedVersion),
+	}
+	r.versionCache[providerEntry.Name] = candidateCacheEntry{
+		candidates: []candidate{{
+			entry:   providerEntry,
+			version: parse("1.0.0"),
+		}},
+	}
+
+	pg := &pubGrubSolver{
+		r:               r,
+		s:               newState(),
+		solution:        newPGPartialSolution(),
+		incompatByPkg:   make(map[string][]*pgIncompatibility),
+		pending:         map[string]pgPendingMeta{virtualName: {}},
+		minStabilityByP: make(map[string]version.Stability),
+		candidateSets:   make(map[string]version.VersionSet),
+		conflictPkgs:    make(map[string]struct{}),
+	}
+	pg.s.resolved[providerEntry.Name] = resolvedEntry{
+		entry:   providerEntry,
+		version: parse("1.0.0"),
+	}
+
+	var queue []string
+	decided, missingOnly, unsat := pg.decide(&queue)
+	if !decided {
+		t.Fatalf("decide() = false, missing=%q unsat=%q", missingOnly, unsat)
+	}
+	if missingOnly != "" || unsat != "" {
+		t.Fatalf("unexpected decide result: missing=%q unsat=%q", missingOnly, unsat)
+	}
+
+	prov, ok := pg.s.providers[virtualName]
+	if !ok {
+		t.Fatalf("missing provider registration for %s", virtualName)
+	}
+	if prov.realName != providerEntry.Name {
+		t.Fatalf("provider realName=%q, want %q", prov.realName, providerEntry.Name)
+	}
+}
+
+func TestPubGrubDecideDefersMissingVirtualWhenProviderPending(t *testing.T) {
+	parse := func(raw string) version.Version {
+		t.Helper()
+		v, err := version.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse version %q: %v", raw, err)
+		}
+		return v
+	}
+
+	virtualName := "zz/virtual-contract"
+	providerName := "acme/provider"
+	providerEntry := packagist.VersionEntry{
+		Name:    providerName,
+		Version: "1.0.0",
+		Provide: map[string]string{virtualName: "1.0.0"},
+	}
+
+	r := &resolver{
+		ctx:                  context.Background(),
+		minimumStability:     version.Stable,
+		versionCache:         map[string]candidateCacheEntry{},
+		providedVersionCache: make(map[string]providedVersion),
+	}
+	r.versionCache[providerName] = candidateCacheEntry{
+		candidates: []candidate{{
+			entry:   providerEntry,
+			version: parse("1.0.0"),
+		}},
+	}
+
+	pg := &pubGrubSolver{
+		r:               r,
+		s:               newState(),
+		solution:        newPGPartialSolution(),
+		incompatByPkg:   make(map[string][]*pgIncompatibility),
+		pending:         map[string]pgPendingMeta{virtualName: {}, providerName: {}},
+		minStabilityByP: make(map[string]version.Stability),
+		candidateSets:   make(map[string]version.VersionSet),
+		conflictPkgs:    make(map[string]struct{}),
+	}
+
+	var queue []string
+	decided, missingOnly, unsat := pg.decide(&queue)
+	if !decided {
+		t.Fatalf("decide() = false, missing=%q unsat=%q", missingOnly, unsat)
+	}
+	if missingOnly != "" || unsat != "" {
+		t.Fatalf("unexpected decide result: missing=%q unsat=%q", missingOnly, unsat)
+	}
+
+	prov, ok := pg.s.providers[virtualName]
+	if !ok {
+		t.Fatalf("missing provider registration for %s", virtualName)
+	}
+	if prov.realName != providerName {
+		t.Fatalf("provider realName=%q, want %q", prov.realName, providerName)
+	}
+}
+
+func TestPubGrubDecidePrefersRealProviderOverVirtualPlaceholder(t *testing.T) {
+	parse := func(raw string) version.Version {
+		t.Helper()
+		v, err := version.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse version %q: %v", raw, err)
+		}
+		return v
+	}
+
+	virtualName := "zz/virtual-contract"
+	providerName := "acme/provider"
+	providerEntry := packagist.VersionEntry{
+		Name:    providerName,
+		Version: "1.0.0",
+		Provide: map[string]string{virtualName: "1.0.0"},
+	}
+
+	r := &resolver{
+		ctx:                  context.Background(),
+		minimumStability:     version.Stable,
+		versionCache:         map[string]candidateCacheEntry{},
+		providedVersionCache: make(map[string]providedVersion),
+	}
+	r.versionCache[virtualName] = candidateCacheEntry{err: packagist.ErrPackageNotFound}
+	r.versionCache[providerName] = candidateCacheEntry{
+		candidates: []candidate{{
+			entry:   providerEntry,
+			version: parse("1.0.0"),
+		}},
+	}
+
+	pg := &pubGrubSolver{
+		r:               r,
+		s:               newState(),
+		solution:        newPGPartialSolution(),
+		incompatByPkg:   make(map[string][]*pgIncompatibility),
+		pending:         map[string]pgPendingMeta{virtualName: {}, providerName: {}},
+		minStabilityByP: make(map[string]version.Stability),
+		candidateSets:   make(map[string]version.VersionSet),
+		conflictPkgs:    make(map[string]struct{}),
+	}
+	pg.s.providers[virtualName] = provider{realName: providerName}
+
+	var queue []string
+	decided, missingOnly, unsat := pg.decide(&queue)
+	if !decided {
+		t.Fatalf("decide() = false, missing=%q unsat=%q", missingOnly, unsat)
+	}
+	if missingOnly != "" || unsat != "" {
+		t.Fatalf("unexpected decide result: missing=%q unsat=%q", missingOnly, unsat)
+	}
+	if len(pg.decisions) != 1 {
+		t.Fatalf("got %d decisions, want 1", len(pg.decisions))
+	}
+	if got := pg.decisions[0].pkg; got != providerName {
+		t.Fatalf("decided %q, want %q", got, providerName)
+	}
+}
+
 func TestResolvePGIncompatibilitiesUnionsDuplicatePackageTerms(t *testing.T) {
 	parseConstraint := func(raw string) version.VersionSet {
 		t.Helper()
