@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func TestProgressVerboseIncludesElapsedTimestamp(t *testing.T) {
+	var out bytes.Buffer
+	progress := NewProgress(&out, "Resolving", 0, true)
+	progress.start = time.Now().Add(-1250 * time.Millisecond)
+
+	progress.Increment("acme/foo")
+	progress.Error("  Solving... last=acme/foo states=42")
+
+	s := out.String()
+	assertContains(t, s, "[1.25s] Resolving acme/foo")
+	assertContains(t, s, "[1.25s]   Solving... last=acme/foo states=42")
+}
+
 func TestPrintProfile(t *testing.T) {
 	var out bytes.Buffer
 	PrintProfile(&out, 5*time.Second, []ProfileSection{

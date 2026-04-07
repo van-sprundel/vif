@@ -35,7 +35,7 @@ func NewProgress(w io.Writer, label string, total int, verbose bool) *Progress {
 func (p *Progress) Increment(name string) {
 	n := p.done.Add(1)
 	if p.verbose {
-		fmt.Fprintf(p.w, "  %s %s\n", p.label, name)
+		fmt.Fprintf(p.w, "[%s] %s %s\n", formatDuration(time.Since(p.start)), p.label, name)
 		return
 	}
 	p.mu.Lock()
@@ -54,7 +54,11 @@ func (p *Progress) Error(msg string) {
 	if p.dirty {
 		fmt.Fprint(p.w, "\r\033[K") // clear progress line
 	}
-	fmt.Fprintln(p.w, msg)
+	if p.verbose {
+		fmt.Fprintf(p.w, "[%s] %s\n", formatDuration(time.Since(p.start)), msg)
+	} else {
+		fmt.Fprintln(p.w, msg)
+	}
 	p.dirty = false
 	p.mu.Unlock()
 }
