@@ -113,6 +113,56 @@ func TestClientGetPackage(t *testing.T) {
 	}
 }
 
+func TestClientMatchPackageLearnsVendorAvailability(t *testing.T) {
+	type matcher interface {
+		MatchPackage(string) bool
+	}
+
+	barResp := packagist.APIResponse{
+		Packages: map[string][]packagist.VersionEntry{
+			"acme/bar": {{Name: "acme/bar", Version: "1.0.0", Type: "library"}},
+		},
+	}
+	barData, _ := json.Marshal(barResp)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			http.NotFound(w, r)
+		case "/p2/acme/bar.json":
+			w.Write(barData)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := packagist.NewClient(srv.URL)
+	m, ok := interface{}(client).(matcher)
+	if !ok {
+		t.Fatal("client should implement MatchPackage")
+	}
+
+	if !m.MatchPackage("acme/foo") {
+		t.Fatal("unknown vendor should be eligible before learning")
+	}
+
+	if _, err := client.GetPackage(context.Background(), "acme/foo"); !errors.Is(err, packagist.ErrPackageNotFound) {
+		t.Fatalf("GetPackage(acme/foo) error = %v, want ErrPackageNotFound", err)
+	}
+
+	if m.MatchPackage("acme/baz") {
+		t.Fatal("vendor with only misses should be skipped")
+	}
+
+	if _, err := client.GetPackage(context.Background(), "acme/bar"); err != nil {
+		t.Fatalf("GetPackage(acme/bar): %v", err)
+	}
+
+	if !m.MatchPackage("acme/qux") {
+		t.Fatal("vendor should be eligible again after a hit")
+	}
+}
+
 func TestClientGetPackageMergesDevVersions(t *testing.T) {
 	stableResp := packagist.APIResponse{
 		Packages: map[string][]packagist.VersionEntry{

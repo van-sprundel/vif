@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/van-sprundel/vif/internal/composerauth"
@@ -221,6 +222,13 @@ type Client struct {
 	rootMinified bool
 	metadataURL  string
 	includes     []string
+	// vendorStates learns which vendor prefixes are likely absent on this source.
+	vendorStates sync.Map // key: vendor prefix -> *vendorState
+}
+
+type vendorState struct {
+	hits   atomic.Int32
+	misses atomic.Int32
 }
 
 // Fetcher is the metadata interface used by the resolver.
@@ -262,6 +270,21 @@ func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
 // RepositoryLabel identifies this repository in trace output.
 func (c *Client) RepositoryLabel() string {
 	return c.baseURL
+}
+
+// MatchPackage narrows lookups for well-known repositories that only host
+// vendor prefixes this source has already shown to be absent.
+func (c *Client) MatchPackage(name string) bool {
+	vendor := vendorPrefix(name)
+	if vendor == "" {
+		return true
+	}
+	val, ok := c.vendorStates.Load(vendor)
+	if !ok {
+		return true
+	}
+	state := val.(*vendorState)
+	return !(state.misses.Load() > 0 && state.hits.Load() == 0)
 }
 
 // SetAuth configures Composer-style auth for metadata requests.
@@ -353,14 +376,17 @@ func (c *Client) GetPackageWithDev(ctx context.Context, name string, includeDev 
 		return nil, fmt.Errorf("%w: %s", ErrAuthRequired, name)
 	}
 	if hasCached && cached.notFound {
+		c.recordVendorResult(name, ErrPackageNotFound)
 		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 	}
 	if hasCached && (cached.devMerged || !includeDev) {
+		c.recordVendorResult(name, nil)
 		return cached.versions, nil
 	}
 
 	versions, err := c.getPackageP2(ctx, name, cached, hasCached)
 	if err == nil {
+		c.recordVendorResult(name, nil)
 		if !includeDev {
 			c.mu.Lock()
 			entry := c.cache[name]
@@ -379,6 +405,7 @@ func (c *Client) GetPackageWithDev(ctx context.Context, name string, includeDev 
 		return nil, fallbackErr
 	}
 	if !useIncludeFallback {
+		c.recordVendorResult(name, ErrPackageNotFound)
 		c.mu.Lock()
 		c.cache[name] = cacheEntry{notFound: true}
 		c.mu.Unlock()
@@ -387,8 +414,12 @@ func (c *Client) GetPackageWithDev(ctx context.Context, name string, includeDev 
 
 	versions, err = c.getPackageFromRootIncludes(ctx, name)
 	if err != nil {
+		if errors.Is(err, ErrPackageNotFound) {
+			c.recordVendorResult(name, ErrPackageNotFound)
+		}
 		return nil, err
 	}
+	c.recordVendorResult(name, nil)
 
 	c.mu.Lock()
 	c.cache[name] = cacheEntry{versions: versions}
@@ -397,6 +428,34 @@ func (c *Client) GetPackageWithDev(ctx context.Context, name string, includeDev 
 		return versions, nil
 	}
 	return c.mergeDevVersions(ctx, name, versions), nil
+}
+
+func (c *Client) recordVendorResult(name string, err error) {
+	vendor := vendorPrefix(name)
+	if vendor == "" {
+		return
+	}
+	val, _ := c.vendorStates.LoadOrStore(vendor, &vendorState{})
+	state := val.(*vendorState)
+	if err == nil {
+		state.hits.Add(1)
+		return
+	}
+	if errors.Is(err, ErrPackageNotFound) {
+		state.misses.Add(1)
+	}
+}
+
+// WarmupMatchScope seeds vendor availability from packages.json when the
+// repository exposes package names there. Failures are intentionally ignored.
+func (c *Client) WarmupMatchScope(ctx context.Context) {
+	rootPackages, _, _, err := c.loadRootMetadata(ctx)
+	if err != nil || len(rootPackages) == 0 {
+		return
+	}
+	for name := range rootPackages {
+		c.recordVendorResult(name, nil)
+	}
 }
 
 func (c *Client) mergeDevVersions(ctx context.Context, name string, versions []VersionEntry) []VersionEntry {

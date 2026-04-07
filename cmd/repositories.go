@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/packagist"
@@ -11,6 +12,10 @@ import (
 type routedFetcher struct {
 	packagist.Fetcher
 	label string
+}
+
+type scopeWarmer interface {
+	WarmupMatchScope(context.Context)
 }
 
 func (r routedFetcher) RepositoryLabel() string {
@@ -31,6 +36,7 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 	}
 
 	var sources []packagist.Fetcher
+	var warmers []scopeWarmer
 	for _, repo := range cj.Repositories {
 		if strings.ToLower(strings.TrimSpace(repo.Type)) != "composer" {
 			continue
@@ -47,6 +53,7 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 			Fetcher: client,
 			label:   client.RepositoryLabel(),
 		})
+		warmers = append(warmers, client)
 	}
 
 	packagistClient := packagist.NewClient("https://repo.packagist.org")
@@ -58,6 +65,15 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 		Fetcher: packagistClient,
 		label:   packagistClient.RepositoryLabel(),
 	})
+	warmers = append(warmers, packagistClient)
+
+	for _, warmer := range warmers {
+		go func(w scopeWarmer) {
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+			w.WarmupMatchScope(ctx)
+		}(warmer)
+	}
 
 	return packagist.NewChain(sources...), nil
 }
