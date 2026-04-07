@@ -19,6 +19,10 @@ type Chain struct {
 	trace   func(LookupTrace)
 	// prefixStates tracks hit/miss counts per (source index, vendor prefix).
 	prefixStates sync.Map // key: prefixKey → *prefixState
+	// prefixProbes gates concurrent lookups so only one goroutine per
+	// (source, prefix) does the initial HTTP request; others wait and reuse
+	// the recorded hit/miss result.
+	prefixProbes sync.Map // key: prefixKey → chan struct{}
 }
 
 type prefixKey struct {
@@ -60,11 +64,15 @@ func (c *Chain) GetPackage(ctx context.Context, name string) ([]VersionEntry, er
 
 // GetPackageWithDev returns the first successful package hit across configured
 // sources, optionally skipping separate ~dev metadata lookups.
+// It queries all eligible sources in parallel and returns the result from the
+// highest-priority source that succeeds.
 func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev bool) ([]VersionEntry, error) {
-	var lastNotFound error
-	var lastAuthErr error
-	var lastTransientErr error
-
+	// Collect eligible sources (non-blocking checks only).
+	type candidate struct {
+		idx    int
+		source Fetcher
+	}
+	var candidates []candidate
 	for i, source := range c.sources {
 		if source == nil {
 			continue
@@ -75,41 +83,95 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		if c.shouldSkipPrefix(i, name) {
 			continue
 		}
-		start := time.Now()
-		var (
-			versions []VersionEntry
-			err      error
-		)
-		if devSource, ok := source.(DevFetcher); ok {
-			versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
-		} else {
-			versions, err = source.GetPackage(ctx, name)
-		}
-		c.recordPrefixResult(i, name, err)
-		if c.trace != nil {
+		candidates = append(candidates, candidate{idx: i, source: source})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+
+	// Single eligible source — skip goroutine overhead.
+	if len(candidates) == 1 {
+		cand := candidates[0]
+		return c.fetchFromSource(ctx, cand.idx, cand.source, name, includeDev)
+	}
+
+	// Multiple eligible sources — query in parallel.
+	type result struct {
+		idx      int
+		source   Fetcher
+		versions []VersionEntry
+		err      error
+		duration time.Duration
+	}
+	results := make([]result, len(candidates))
+	var wg sync.WaitGroup
+	wg.Add(len(candidates))
+	for j, cand := range candidates {
+		go func(j int, cand candidate) {
+			defer wg.Done()
+			// Apply probe gate within the goroutine so probes don't block parallelism.
+			isProber := c.awaitOrStartProbe(ctx, cand.idx, name)
+			if !isProber && c.shouldSkipPrefix(cand.idx, name) {
+				results[j] = result{
+					idx:    cand.idx,
+					source: cand.source,
+					err:    ErrPackageNotFound,
+				}
+				return
+			}
+			start := time.Now()
+			var (
+				versions []VersionEntry
+				err      error
+			)
+			if devSource, ok := cand.source.(DevFetcher); ok {
+				versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
+			} else {
+				versions, err = cand.source.GetPackage(ctx, name)
+			}
+			c.recordPrefixResult(cand.idx, name, err)
+			if isProber {
+				c.finishProbe(cand.idx, name)
+			}
+			results[j] = result{
+				idx:      cand.idx,
+				source:   cand.source,
+				versions: versions,
+				err:      err,
+				duration: time.Since(start),
+			}
+		}(j, cand)
+	}
+	wg.Wait()
+
+	// Emit traces and pick the best result in priority order.
+	var lastNotFound, lastAuthErr, lastTransientErr error
+	for _, r := range results {
+		if c.trace != nil && r.duration > 0 {
 			c.trace(LookupTrace{
-				Source:   repositoryLabel(source),
+				Source:   repositoryLabel(r.source),
 				Package:  name,
-				Duration: time.Since(start),
-				Err:      err,
+				Duration: r.duration,
+				Err:      r.err,
 			})
 		}
-		if err == nil {
-			return versions, nil
+		if r.err == nil {
+			return r.versions, nil
 		}
-		if errors.Is(err, ErrPackageNotFound) {
-			lastNotFound = err
+		if errors.Is(r.err, ErrPackageNotFound) {
+			lastNotFound = r.err
 			continue
 		}
-		if errors.Is(err, ErrAuthRequired) {
-			lastAuthErr = err
+		if errors.Is(r.err, ErrAuthRequired) {
+			lastAuthErr = r.err
 			continue
 		}
-		if isTransientRepositoryError(err) {
-			lastTransientErr = err
+		if isTransientRepositoryError(r.err) {
+			lastTransientErr = r.err
 			continue
 		}
-		return nil, err
+		// Hard error from a source — but keep checking higher-priority hits.
 	}
 
 	if lastAuthErr != nil {
@@ -122,6 +184,37 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		return nil, lastNotFound
 	}
 	return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+}
+
+// fetchFromSource performs a single-source lookup with probe gating and tracing.
+func (c *Chain) fetchFromSource(ctx context.Context, idx int, source Fetcher, name string, includeDev bool) ([]VersionEntry, error) {
+	isProber := c.awaitOrStartProbe(ctx, idx, name)
+	if !isProber && c.shouldSkipPrefix(idx, name) {
+		return nil, ErrPackageNotFound
+	}
+	start := time.Now()
+	var (
+		versions []VersionEntry
+		err      error
+	)
+	if devSource, ok := source.(DevFetcher); ok {
+		versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
+	} else {
+		versions, err = source.GetPackage(ctx, name)
+	}
+	c.recordPrefixResult(idx, name, err)
+	if isProber {
+		c.finishProbe(idx, name)
+	}
+	if c.trace != nil {
+		c.trace(LookupTrace{
+			Source:   repositoryLabel(source),
+			Package:  name,
+			Duration: time.Since(start),
+			Err:      err,
+		})
+	}
+	return versions, err
 }
 
 func isTransientRepositoryError(err error) bool {
@@ -161,6 +254,42 @@ func (c *Chain) shouldSkipPrefix(sourceIdx int, name string) bool {
 	}
 	state := val.(*prefixState)
 	return state.misses.Load() > 0 && state.hits.Load() == 0
+}
+
+// awaitOrStartProbe coordinates concurrent lookups for the same (source, prefix).
+// Returns true if the caller should proceed with the actual lookup (is the "prober").
+// Returns false if another goroutine already probed — the caller should recheck
+// shouldSkipPrefix to see if the result was a miss.
+func (c *Chain) awaitOrStartProbe(ctx context.Context, sourceIdx int, name string) bool {
+	prefix := vendorPrefix(name)
+	if prefix == "" {
+		return true
+	}
+	key := prefixKey{sourceIdx: sourceIdx, prefix: prefix}
+
+	ch := make(chan struct{})
+	existing, loaded := c.prefixProbes.LoadOrStore(key, ch)
+	if !loaded {
+		return true // we're the first — proceed with lookup
+	}
+	// Wait for the existing probe to finish (or context cancellation).
+	select {
+	case <-existing.(chan struct{}):
+	case <-ctx.Done():
+	}
+	return false
+}
+
+// finishProbe signals waiting goroutines that the probe for (source, prefix) is done.
+func (c *Chain) finishProbe(sourceIdx int, name string) {
+	prefix := vendorPrefix(name)
+	if prefix == "" {
+		return
+	}
+	key := prefixKey{sourceIdx: sourceIdx, prefix: prefix}
+	if val, ok := c.prefixProbes.Load(key); ok {
+		close(val.(chan struct{}))
+	}
 }
 
 // recordPrefixResult updates the prefix hit/miss tracking after a lookup attempt.

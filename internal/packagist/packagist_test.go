@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -703,11 +705,15 @@ func (notFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionE
 }
 
 type countingNotFoundFetcher struct {
-	calls int
+	calls atomic.Int32
+	delay time.Duration
 }
 
-func (f *countingNotFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
-	f.calls++
+func (f *countingNotFoundFetcher) GetPackage(_ context.Context, _ string) ([]packagist.VersionEntry, error) {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	f.calls.Add(1)
 	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
 }
 
@@ -730,14 +736,14 @@ func TestChainSkipsSourceAfterPrefixMiss(t *testing.T) {
 
 	// First lookup: source is called (miss recorded for "acme/" prefix).
 	_, _ = chain.GetPackage(context.Background(), "acme/foo")
-	if source.calls != 1 {
-		t.Fatalf("first call: got %d calls, want 1", source.calls)
+	if got := source.calls.Load(); got != 1 {
+		t.Fatalf("first call: got %d calls, want 1", got)
 	}
 
 	// Second lookup with same prefix: source is skipped.
 	_, _ = chain.GetPackage(context.Background(), "acme/bar")
-	if source.calls != 1 {
-		t.Fatalf("second call: got %d calls, want 1 (should be skipped)", source.calls)
+	if got := source.calls.Load(); got != 1 {
+		t.Fatalf("second call: got %d calls, want 1 (should be skipped)", got)
 	}
 }
 
@@ -771,6 +777,30 @@ func (f *hitThenMissFetcher) GetPackage(_ context.Context, _ string) ([]packagis
 		return f.hitVersions, nil
 	}
 	return nil, fmt.Errorf("%w: missing", packagist.ErrPackageNotFound)
+}
+
+func TestChainProbeGatePreventsConcurrentMisses(t *testing.T) {
+	source := &countingNotFoundFetcher{delay: 50 * time.Millisecond}
+
+	chain := packagist.NewChain(source)
+
+	// Launch 5 concurrent lookups for the same prefix.
+	const n = 5
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_, _ = chain.GetPackage(context.Background(), fmt.Sprintf("acme/pkg%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	// Only the first goroutine should have called the source (the "prober").
+	// The others waited, saw the miss, and skipped.
+	if got := source.calls.Load(); got != 1 {
+		t.Fatalf("concurrent lookups: got %d calls, want 1", got)
+	}
 }
 
 func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
