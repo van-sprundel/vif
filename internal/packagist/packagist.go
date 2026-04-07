@@ -259,6 +259,11 @@ func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
 	}
 }
 
+// RepositoryLabel identifies this repository in trace output.
+func (c *Client) RepositoryLabel() string {
+	return c.baseURL
+}
+
 // SetAuth configures Composer-style auth for metadata requests.
 func (c *Client) SetAuth(cfg *composerauth.Config) {
 	c.auth = cfg

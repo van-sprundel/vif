@@ -714,6 +714,58 @@ func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
 	}
 }
 
+func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
+	publicResp := sampleResponse()
+	publicData, _ := json.Marshal(publicResp)
+
+	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer privateSrv.Close()
+
+	publicSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/p2/acme/foo.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(publicData)
+	}))
+	defer publicSrv.Close()
+
+	chain := packagist.NewChain(
+		packagist.NewClient(privateSrv.URL),
+		packagist.NewClient(publicSrv.URL),
+	)
+
+	var traces []packagist.LookupTrace
+	chain.SetLookupTrace(func(trace packagist.LookupTrace) {
+		traces = append(traces, trace)
+	})
+
+	versions, err := chain.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+	if len(traces) != 2 {
+		t.Fatalf("got %d traces, want 2", len(traces))
+	}
+	if traces[0].Source != privateSrv.URL {
+		t.Fatalf("first source = %q, want %q", traces[0].Source, privateSrv.URL)
+	}
+	if !errors.Is(traces[0].Err, packagist.ErrPackageNotFound) {
+		t.Fatalf("first trace err = %v, want not found", traces[0].Err)
+	}
+	if traces[1].Source != publicSrv.URL {
+		t.Fatalf("second source = %q, want %q", traces[1].Source, publicSrv.URL)
+	}
+	if traces[1].Err != nil {
+		t.Fatalf("second trace err = %v, want nil", traces[1].Err)
+	}
+}
+
 func TestPersistentMetadataCacheETagRoundTrip(t *testing.T) {
 	resp := sampleResponse()
 	data, _ := json.Marshal(resp)

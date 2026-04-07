@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -128,5 +129,28 @@ func TestFormatLookupLog(t *testing.T) {
 	err := errors.New("timeout")
 	if got, want := formatLookupLog("acme/foo", 500*time.Millisecond, err), "  Lookup acme/foo (500ms, error: timeout)"; got != want {
 		t.Fatalf("formatLookupLog error = %q, want %q", got, want)
+	}
+}
+
+func TestFormatRepositoryLookupLog(t *testing.T) {
+	got := formatRepositoryLookupLog(packagist.LookupTrace{
+		Source:   "https://repo.example.test",
+		Package:  "acme/foo",
+		Duration: 1500 * time.Millisecond,
+	})
+	want := "  Repo https://repo.example.test acme/foo (1.50s, hit)"
+	if got != want {
+		t.Fatalf("formatRepositoryLookupLog hit = %q, want %q", got, want)
+	}
+
+	got = formatRepositoryLookupLog(packagist.LookupTrace{
+		Source:   "https://repo.example.test",
+		Package:  "acme/foo",
+		Duration: 500 * time.Millisecond,
+		Err:      fmt.Errorf("%w: acme/foo", packagist.ErrPackageNotFound),
+	})
+	want = "  Repo https://repo.example.test acme/foo (500ms, not found)"
+	if got != want {
+		t.Fatalf("formatRepositoryLookupLog miss = %q, want %q", got, want)
 	}
 }

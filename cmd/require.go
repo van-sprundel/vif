@@ -115,6 +115,16 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 		}
 	}
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
+	if traced, ok := client.(interface {
+		SetLookupTrace(func(packagist.LookupTrace))
+	}); ok {
+		traced.SetLookupTrace(func(trace packagist.LookupTrace) {
+			if !verbose {
+				return
+			}
+			progress.Error(formatRepositoryLookupLog(trace))
+		})
+	}
 	var (
 		solveMu      sync.Mutex
 		solveLast    time.Time

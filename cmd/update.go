@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -136,6 +137,16 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 	}
 
 	progress := ui.NewProgress(w, "Resolving", 0, verbose)
+	if traced, ok := client.(interface {
+		SetLookupTrace(func(packagist.LookupTrace))
+	}); ok {
+		traced.SetLookupTrace(func(trace packagist.LookupTrace) {
+			if !verbose {
+				return
+			}
+			progress.Error(formatRepositoryLookupLog(trace))
+		})
+	}
 	var (
 		solveMu      sync.Mutex
 		solveLast    time.Time
@@ -291,6 +302,34 @@ func formatLookupLog(name string, d time.Duration, err error) string {
 		return fmt.Sprintf("  Lookup %s (%s, error: %v)", name, profileDuration(d), err)
 	}
 	return fmt.Sprintf("  Lookup %s (%s)", name, profileDuration(d))
+}
+
+func formatRepositoryLookupLog(trace packagist.LookupTrace) string {
+	status := "hit"
+	switch {
+	case trace.Err == nil:
+		status = "hit"
+	case errors.Is(trace.Err, packagist.ErrPackageNotFound):
+		status = "not found"
+	case errors.Is(trace.Err, packagist.ErrAuthRequired):
+		status = "auth required"
+	case isTransientMetadataError(trace.Err):
+		status = "transient error"
+	default:
+		status = "error"
+	}
+
+	if trace.Err != nil && status != "not found" && status != "auth required" && status != "transient error" {
+		return fmt.Sprintf("  Repo %s %s (%s, %s: %v)", trace.Source, trace.Package, profileDuration(trace.Duration), status, trace.Err)
+	}
+	if trace.Err != nil && status == "transient error" {
+		return fmt.Sprintf("  Repo %s %s (%s, %s: %v)", trace.Source, trace.Package, profileDuration(trace.Duration), status, trace.Err)
+	}
+	return fmt.Sprintf("  Repo %s %s (%s, %s)", trace.Source, trace.Package, profileDuration(trace.Duration), status)
+}
+
+func isTransientMetadataError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 func resolveRestrictedPackages(ctx context.Context, client packagist.Fetcher, cj *composer.ComposerJSON) (map[string]struct{}, string, error) {
