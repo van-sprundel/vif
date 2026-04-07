@@ -5,13 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Chain tries multiple Composer-compatible repositories in order.
+// It dynamically learns which vendor prefixes each source serves and skips
+// sources that have only returned "not found" for a given prefix.
 type Chain struct {
 	sources []Fetcher
 	trace   func(LookupTrace)
+	// prefixStates tracks hit/miss counts per (source index, vendor prefix).
+	prefixStates sync.Map // key: prefixKey → *prefixState
+}
+
+type prefixKey struct {
+	sourceIdx int
+	prefix    string
+}
+
+type prefixState struct {
+	hits   atomic.Int32
+	misses atomic.Int32
 }
 
 type packageMatcher interface {
@@ -48,11 +65,14 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 	var lastAuthErr error
 	var lastTransientErr error
 
-	for _, source := range c.sources {
+	for i, source := range c.sources {
 		if source == nil {
 			continue
 		}
 		if matcher, ok := source.(packageMatcher); ok && !matcher.MatchPackage(name) {
+			continue
+		}
+		if c.shouldSkipPrefix(i, name) {
 			continue
 		}
 		start := time.Now()
@@ -65,6 +85,7 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		} else {
 			versions, err = source.GetPackage(ctx, name)
 		}
+		c.recordPrefixResult(i, name, err)
 		if c.trace != nil {
 			c.trace(LookupTrace{
 				Source:   repositoryLabel(source),
@@ -117,4 +138,44 @@ func repositoryLabel(source Fetcher) string {
 		return named.RepositoryLabel()
 	}
 	return fmt.Sprintf("%T", source)
+}
+
+// vendorPrefix returns the part before the first "/" in a package name.
+func vendorPrefix(name string) string {
+	if idx := strings.Index(name, "/"); idx > 0 {
+		return name[:idx]
+	}
+	return ""
+}
+
+// shouldSkipPrefix returns true if the given source has only returned "not found"
+// for the vendor prefix of name (i.e. misses > 0 and hits == 0).
+func (c *Chain) shouldSkipPrefix(sourceIdx int, name string) bool {
+	prefix := vendorPrefix(name)
+	if prefix == "" {
+		return false
+	}
+	val, ok := c.prefixStates.Load(prefixKey{sourceIdx: sourceIdx, prefix: prefix})
+	if !ok {
+		return false
+	}
+	state := val.(*prefixState)
+	return state.misses.Load() > 0 && state.hits.Load() == 0
+}
+
+// recordPrefixResult updates the prefix hit/miss tracking after a lookup attempt.
+// Transient errors are not recorded to avoid false skips.
+func (c *Chain) recordPrefixResult(sourceIdx int, name string, err error) {
+	prefix := vendorPrefix(name)
+	if prefix == "" {
+		return
+	}
+	key := prefixKey{sourceIdx: sourceIdx, prefix: prefix}
+	val, _ := c.prefixStates.LoadOrStore(key, &prefixState{})
+	state := val.(*prefixState)
+	if err == nil {
+		state.hits.Add(1)
+	} else if errors.Is(err, ErrPackageNotFound) {
+		state.misses.Add(1)
+	}
 }

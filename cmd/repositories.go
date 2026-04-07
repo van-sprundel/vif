@@ -10,19 +10,11 @@ import (
 
 type routedFetcher struct {
 	packagist.Fetcher
-	label   string
-	matcher func(string) bool
+	label string
 }
 
 func (r routedFetcher) RepositoryLabel() string {
 	return r.label
-}
-
-func (r routedFetcher) MatchPackage(name string) bool {
-	if r.matcher == nil {
-		return true
-	}
-	return r.matcher(name)
 }
 
 func (r routedFetcher) GetPackageWithDev(ctx context.Context, name string, includeDev bool) ([]packagist.VersionEntry, error) {
@@ -54,7 +46,6 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 		sources = append(sources, routedFetcher{
 			Fetcher: client,
 			label:   client.RepositoryLabel(),
-			matcher: repositoryMatcher(repo.URL),
 		})
 	}
 
@@ -66,7 +57,6 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 	sources = append(sources, routedFetcher{
 		Fetcher: packagistClient,
 		label:   packagistClient.RepositoryLabel(),
-		matcher: repositoryMatcher(packagistClient.RepositoryLabel()),
 	})
 
 	return packagist.NewChain(sources...), nil

@@ -702,21 +702,13 @@ func (notFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionE
 	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
 }
 
-type matchedNotFoundFetcher struct {
+type countingNotFoundFetcher struct {
 	calls int
-	match func(string) bool
 }
 
-func (f *matchedNotFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
+func (f *countingNotFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
 	f.calls++
 	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
-}
-
-func (f *matchedNotFoundFetcher) MatchPackage(name string) bool {
-	if f.match == nil {
-		return true
-	}
-	return f.match(name)
 }
 
 func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
@@ -731,26 +723,54 @@ func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
 	}
 }
 
-func TestChainSkipsSourcesWhoseMatcherRejectsPackage(t *testing.T) {
-	skipped := &matchedNotFoundFetcher{
-		match: func(name string) bool { return false },
-	}
-	matched := &matchedNotFoundFetcher{
-		match: func(name string) bool { return true },
+func TestChainSkipsSourceAfterPrefixMiss(t *testing.T) {
+	source := &countingNotFoundFetcher{}
+
+	chain := packagist.NewChain(source)
+
+	// First lookup: source is called (miss recorded for "acme/" prefix).
+	_, _ = chain.GetPackage(context.Background(), "acme/foo")
+	if source.calls != 1 {
+		t.Fatalf("first call: got %d calls, want 1", source.calls)
 	}
 
-	chain := packagist.NewChain(skipped, matched)
+	// Second lookup with same prefix: source is skipped.
+	_, _ = chain.GetPackage(context.Background(), "acme/bar")
+	if source.calls != 1 {
+		t.Fatalf("second call: got %d calls, want 1 (should be skipped)", source.calls)
+	}
+}
 
+func TestChainDoesNotSkipPrefixWithHit(t *testing.T) {
+	hitVersions := []packagist.VersionEntry{{Version: "1.0.0"}}
+	hitThenMiss := &hitThenMissFetcher{hitVersions: hitVersions}
+
+	chain := packagist.NewChain(hitThenMiss)
+
+	// First lookup: hit (records a hit for "acme/" prefix).
 	_, err := chain.GetPackage(context.Background(), "acme/foo")
-	if err == nil {
-		t.Fatal("expected error")
+	if err != nil {
+		t.Fatalf("first call: unexpected error %v", err)
 	}
-	if skipped.calls != 0 {
-		t.Fatalf("skipped source called %d times, want 0", skipped.calls)
+
+	// Second lookup with same prefix: source is NOT skipped because it had a hit.
+	_, _ = chain.GetPackage(context.Background(), "acme/bar")
+	if hitThenMiss.calls != 2 {
+		t.Fatalf("second call: got %d calls, want 2 (should not be skipped)", hitThenMiss.calls)
 	}
-	if matched.calls != 1 {
-		t.Fatalf("matched source called %d times, want 1", matched.calls)
+}
+
+type hitThenMissFetcher struct {
+	calls       int
+	hitVersions []packagist.VersionEntry
+}
+
+func (f *hitThenMissFetcher) GetPackage(_ context.Context, _ string) ([]packagist.VersionEntry, error) {
+	f.calls++
+	if f.calls == 1 {
+		return f.hitVersions, nil
 	}
+	return nil, fmt.Errorf("%w: missing", packagist.ErrPackageNotFound)
 }
 
 func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
