@@ -14,6 +14,10 @@ type Chain struct {
 	trace   func(LookupTrace)
 }
 
+type packageMatcher interface {
+	MatchPackage(name string) bool
+}
+
 // LookupTrace describes one repository attempt for a package metadata lookup.
 type LookupTrace struct {
 	Source   string
@@ -46,6 +50,9 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 
 	for _, source := range c.sources {
 		if source == nil {
+			continue
+		}
+		if matcher, ok := source.(packageMatcher); ok && !matcher.MatchPackage(name) {
 			continue
 		}
 		start := time.Now()

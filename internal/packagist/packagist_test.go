@@ -702,6 +702,23 @@ func (notFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionE
 	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
 }
 
+type matchedNotFoundFetcher struct {
+	calls int
+	match func(string) bool
+}
+
+func (f *matchedNotFoundFetcher) GetPackage(context.Context, string) ([]packagist.VersionEntry, error) {
+	f.calls++
+	return nil, fmt.Errorf("%w: missing/pkg", packagist.ErrPackageNotFound)
+}
+
+func (f *matchedNotFoundFetcher) MatchPackage(name string) bool {
+	if f.match == nil {
+		return true
+	}
+	return f.match(name)
+}
+
 func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
 	chain := packagist.NewChain(timeoutFetcher{}, notFoundFetcher{})
 
@@ -711,6 +728,28 @@ func TestChainReturnsTransientErrorWhenNoRepositorySucceeds(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestChainSkipsSourcesWhoseMatcherRejectsPackage(t *testing.T) {
+	skipped := &matchedNotFoundFetcher{
+		match: func(name string) bool { return false },
+	}
+	matched := &matchedNotFoundFetcher{
+		match: func(name string) bool { return true },
+	}
+
+	chain := packagist.NewChain(skipped, matched)
+
+	_, err := chain.GetPackage(context.Background(), "acme/foo")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if skipped.calls != 0 {
+		t.Fatalf("skipped source called %d times, want 0", skipped.calls)
+	}
+	if matched.calls != 1 {
+		t.Fatalf("matched source called %d times, want 1", matched.calls)
 	}
 }
 
