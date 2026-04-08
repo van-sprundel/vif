@@ -23,6 +23,7 @@ import (
 // newUpdateCmd returns the `vif update` command.
 func newUpdateCmd() *cobra.Command {
 	var verbose bool
+	var noDev bool
 	var noAutoloader bool
 	var profile bool
 
@@ -31,18 +32,19 @@ func newUpdateCmd() *cobra.Command {
 		Short:        "Resolve dependencies and update composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdate(cmd.Context(), args, verbose, noAutoloader, profile)
+			return runUpdate(cmd.Context(), args, verbose, noDev, noAutoloader, profile)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
+	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
 	cmd.Flags().BoolVar(&profile, "profile", false, "print per-phase timings and slowest packages")
 
 	return cmd
 }
 
-func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloader bool, profile bool) error {
+func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, profile bool) error {
 	start := time.Now()
 	w := os.Stderr
 
@@ -190,6 +192,7 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noAutoloade
 		Restriction:        restriction,
 		LockedEntries:      lockedEntries,
 		Locked:             locked,
+		NoDev:              noDev,
 		LookupDone:         onLookupDone,
 		SolveProgress:      onSolveProgress,
 	}, func(name string) {

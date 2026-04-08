@@ -40,6 +40,8 @@ type Options struct {
 	// RestrictedPackages constrains a specific package set to Restriction.
 	RestrictedPackages map[string]struct{}
 	Restriction        string
+	// NoDev skips require-dev dependencies from resolution entirely.
+	NoDev bool
 	// LookupDone is called after each metadata lookup during prefetch.
 	LookupDone func(name string, duration time.Duration, err error)
 	// SolveProgress is called as the backtracking solver advances.
@@ -66,8 +68,10 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	for name := range cj.NonPlatformRequire() {
 		rootNames = append(rootNames, name)
 	}
-	for name := range cj.NonPlatformRequireDev() {
-		rootNames = append(rootNames, name)
+	if !opts.NoDev {
+		for name := range cj.NonPlatformRequireDev() {
+			rootNames = append(rootNames, name)
+		}
 	}
 
 	// Shared version cache with mutex for concurrent prefetch + solve access.
@@ -122,7 +126,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		r.restrictedPackages = opts.RestrictedPackages
 	}
 
-	// Collect all root requirements (prod + dev).
+	// Collect root requirements (prod, and dev unless --no-dev).
 	var reqs []requirement
 	for name, constraint := range cj.NonPlatformRequire() {
 		c, err := version.ParseConstraint(constraint)
@@ -133,14 +137,16 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		}
 		reqs = append(reqs, requirement{name: name, constraint: c, dev: false, root: true})
 	}
-	for name, constraint := range cj.NonPlatformRequireDev() {
-		c, err := version.ParseConstraint(constraint)
-		if err != nil {
-			prefetchCancel()
-			prefetchWg.Wait()
-			return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
+	if !opts.NoDev {
+		for name, constraint := range cj.NonPlatformRequireDev() {
+			c, err := version.ParseConstraint(constraint)
+			if err != nil {
+				prefetchCancel()
+				prefetchWg.Wait()
+				return nil, fmt.Errorf("resolver: parse constraint %q for %s: %w", constraint, name, err)
+			}
+			reqs = append(reqs, requirement{name: name, constraint: c, dev: true, root: true})
 		}
-		reqs = append(reqs, requirement{name: name, constraint: c, dev: true, root: true})
 	}
 
 	// Sort requirements for deterministic resolution order.
