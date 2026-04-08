@@ -15,6 +15,7 @@ import (
 
 	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"golang.org/x/time/rate"
 )
 
 // APIResponse is the top-level Packagist p2 response.
@@ -213,6 +214,7 @@ type Client struct {
 	httpClient   *http.Client
 	auth         *composerauth.Config
 	metaCache    MetadataCache // nil = no persistent cache
+	rateLimiter  *rate.Limiter
 	mu           sync.RWMutex
 	cache        map[string]cacheEntry
 	authErr      bool
@@ -244,6 +246,13 @@ type DevFetcher interface {
 
 const defaultHTTPTimeout = 10 * time.Second
 
+// defaultRateLimit is the sustained request rate per repository host.
+// 15 req/s avoids 429s from Packagist's CDN while keeping prefetch fast.
+const defaultRateLimit = 15
+
+// defaultRateBurst allows an initial burst before settling to the sustained rate.
+const defaultRateBurst = 25
+
 // ErrPackageNotFound marks a package as absent from the Packagist registry.
 var ErrPackageNotFound = errors.New("packagist: package not found")
 
@@ -261,9 +270,10 @@ func NewClientWithHTTPClient(baseURL string, httpClient *http.Client) *Client {
 		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: httpClient,
-		cache:      make(map[string]cacheEntry),
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		httpClient:  httpClient,
+		rateLimiter: rate.NewLimiter(defaultRateLimit, defaultRateBurst),
+		cache:       make(map[string]cacheEntry),
 	}
 }
 
@@ -317,6 +327,13 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 			}
 		}
 
+		// Wait for rate limiter before each HTTP attempt. This prevents
+		// burst-driven 429s from Packagist's CDN, which are far more
+		// expensive than waiting a few ms between requests.
+		if err := c.rateLimiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
@@ -328,6 +345,13 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 		}
 
 		resp.Body.Close()
+
+		// On 429, halve the sustained rate so all workers back off
+		// together. The rate stays reduced for the remainder of this
+		// resolve pass — a full restore risks re-triggering the limit.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			c.rateLimiter.SetLimit(rate.Limit(defaultRateLimit / 2))
+		}
 
 		if ra := resp.Header.Get("Retry-After"); ra != "" {
 			if secs, parseErr := strconv.Atoi(ra); parseErr == nil && secs > 0 && secs <= 60 {
