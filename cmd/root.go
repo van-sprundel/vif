@@ -28,6 +28,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newRequireCmd())
 	root.AddCommand(newTelemetryCmd())
 	root.AddCommand(newSetupCompletionsCmd())
+	root.AddCommand(newReportCmd())
 
 	return root
 }
