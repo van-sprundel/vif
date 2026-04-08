@@ -109,6 +109,8 @@ func Prompt() {
 		writeConfig("disabled")
 		fmt.Fprintln(os.Stderr, "No worries. You can opt in later with VIF_TELEMETRY=1 or `vif telemetry on`.")
 	}
+	fmt.Fprintln(os.Stderr, "Tip: run `vif setup-completions` to enable shell tab completion.")
+	fmt.Fprintln(os.Stderr)
 }
 
 // Enabled reports whether telemetry collection is opted into.
