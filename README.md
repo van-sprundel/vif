@@ -17,8 +17,6 @@ I recently got a job where I had to use PHP again. Think old Drupal and Symfony 
 
 I found the timings on `composer update` to be insane. On top of that, I only got `composer update` errors  at the **end** of the command (at cleanup phase), meaning I have to wait two minutes on something that had failed anyway. 
 
-For this project we use the pubgrub algorithm, which can just stop and panic if it cannot find a solution.
-
 ## Motivation
 
 I've seen what [bun](https://bun.sh) and [uv](https://docs.astral.sh/uv/) have done to their ecosystem. I had a similar idea back in 2022, but never got around to it. It had left my mind when I joined a TS company, but I now that im back on PHP island I realize *why* I wanted to do this project in the first place... I hate waiting!
@@ -69,8 +67,7 @@ Executed in    8.45 secs    fish           external
    sys time    1.87 secs  352.00 micros    1.87 secs
 ```
 
-We're even able to resolve in certain situations where composer is not a fan of our constraints
-
+We're able to fail early in certain situations, meanwhile composer still churns away like it's doing fine.
 ```sh
 > time composer update
 More deprecation notices were hidden, run again with `-v` to show them.
