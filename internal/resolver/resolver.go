@@ -129,6 +129,12 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	// Collect root requirements (prod, and dev unless --no-dev).
 	var reqs []requirement
 	for name, constraint := range cj.NonPlatformRequire() {
+		if constraint == "self.version" {
+			constraint = cj.Version
+			if constraint == "" {
+				constraint = "*"
+			}
+		}
 		c, err := version.ParseConstraint(constraint)
 		if err != nil {
 			prefetchCancel()
@@ -139,6 +145,12 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	}
 	if !opts.NoDev {
 		for name, constraint := range cj.NonPlatformRequireDev() {
+			if constraint == "self.version" {
+				constraint = cj.Version
+				if constraint == "" {
+					constraint = "*"
+				}
+			}
 			c, err := version.ParseConstraint(constraint)
 			if err != nil {
 				prefetchCancel()
