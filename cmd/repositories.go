@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -27,6 +28,16 @@ func (r routedFetcher) GetPackageWithDev(ctx context.Context, name string, inclu
 		return devFetcher.GetPackageWithDev(ctx, name, includeDev)
 	}
 	return r.Fetcher.GetPackage(ctx, name)
+}
+
+func (r routedFetcher) KnownVendorPrefixes() []string {
+	type prefixer interface {
+		KnownVendorPrefixes() []string
+	}
+	if p, ok := r.Fetcher.(prefixer); ok {
+		return p.KnownVendorPrefixes()
+	}
+	return nil
 }
 
 func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (packagist.Fetcher, error) {
@@ -67,13 +78,19 @@ func metadataClient(cj *composer.ComposerJSON, mc packagist.MetadataCache) (pack
 	})
 	warmers = append(warmers, packagistClient)
 
+	var wg sync.WaitGroup
 	for _, warmer := range warmers {
+		wg.Add(1)
 		go func(w scopeWarmer) {
+			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 			defer cancel()
 			w.WarmupMatchScope(ctx)
 		}(warmer)
 	}
+	wg.Wait()
 
-	return packagist.NewChain(sources...), nil
+	chain := packagist.NewChain(sources...)
+	chain.SeedPrefixExclusions()
+	return chain, nil
 }

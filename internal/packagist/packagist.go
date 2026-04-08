@@ -297,6 +297,20 @@ func (c *Client) MatchPackage(name string) bool {
 	return !(state.misses.Load() > 0 && state.hits.Load() == 0)
 }
 
+// KnownVendorPrefixes returns vendor prefixes that this source has seen with
+// at least one hit during warmup or lookups.
+func (c *Client) KnownVendorPrefixes() []string {
+	var prefixes []string
+	c.vendorStates.Range(func(key, val any) bool {
+		state := val.(*vendorState)
+		if state.hits.Load() > 0 {
+			prefixes = append(prefixes, key.(string))
+		}
+		return true
+	})
+	return prefixes
+}
+
 // SetAuth configures Composer-style auth for metadata requests.
 func (c *Client) SetAuth(cfg *composerauth.Config) {
 	c.auth = cfg

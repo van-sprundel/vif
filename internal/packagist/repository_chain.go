@@ -57,6 +57,51 @@ func (c *Chain) SetLookupTrace(fn func(LookupTrace)) {
 	c.trace = fn
 }
 
+// vendorPrefixSource is implemented by sources that can report which vendor
+// prefixes they serve (e.g. after warmup).
+type vendorPrefixSource interface {
+	KnownVendorPrefixes() []string
+}
+
+// SeedPrefixExclusions pre-populates the chain's prefix skip table using
+// warmup results from each source. For every vendor prefix that at least one
+// source claims (hits > 0), all other sources that don't claim it get a
+// synthetic miss recorded so shouldSkipPrefix returns true from the very first
+// lookup — no wasted probe needed.
+func (c *Chain) SeedPrefixExclusions() {
+	// Collect known prefixes per source index.
+	sourceKnown := make([]map[string]bool, len(c.sources))
+	anyKnown := make(map[string]bool)
+	for i, source := range c.sources {
+		if vps, ok := source.(vendorPrefixSource); ok {
+			prefixes := vps.KnownVendorPrefixes()
+			if len(prefixes) > 0 {
+				sourceKnown[i] = make(map[string]bool, len(prefixes))
+				for _, p := range prefixes {
+					sourceKnown[i][p] = true
+					anyKnown[p] = true
+				}
+			}
+		}
+	}
+	if len(anyKnown) == 0 {
+		return
+	}
+
+	// For each claimed prefix, record a miss on sources that don't claim it.
+	for prefix := range anyKnown {
+		for i := range c.sources {
+			if sourceKnown[i] != nil && sourceKnown[i][prefix] {
+				continue // this source serves the prefix
+			}
+			key := prefixKey{sourceIdx: i, prefix: prefix}
+			val, _ := c.prefixStates.LoadOrStore(key, &prefixState{})
+			state := val.(*prefixState)
+			state.misses.CompareAndSwap(0, 1)
+		}
+	}
+}
+
 // GetPackage returns the first successful package hit across configured sources.
 func (c *Chain) GetPackage(ctx context.Context, name string) ([]VersionEntry, error) {
 	return c.GetPackageWithDev(ctx, name, true)
@@ -241,19 +286,48 @@ func vendorPrefix(name string) string {
 	return ""
 }
 
-// shouldSkipPrefix returns true if the given source has only returned "not found"
-// for the vendor prefix of name (i.e. misses > 0 and hits == 0).
+// shouldSkipPrefix returns true if the given source should be skipped for the
+// vendor prefix of name. A source is skipped when:
+//  1. It has only returned "not found" for that prefix (misses > 0, hits == 0), OR
+//  2. Another source has proven it serves the prefix (hits > 0) AND this source
+//     has at least one miss and zero hits — meaning the prefix is exclusively
+//     owned by the other source.
 func (c *Chain) shouldSkipPrefix(sourceIdx int, name string) bool {
 	prefix := vendorPrefix(name)
 	if prefix == "" {
 		return false
 	}
+
 	val, ok := c.prefixStates.Load(prefixKey{sourceIdx: sourceIdx, prefix: prefix})
-	if !ok {
-		return false
+	if ok {
+		state := val.(*prefixState)
+		if state.misses.Load() > 0 && state.hits.Load() == 0 {
+			return true
+		}
 	}
-	state := val.(*prefixState)
-	return state.misses.Load() > 0 && state.hits.Load() == 0
+
+	// If this source has never been probed for this prefix but another source
+	// already claims it, skip probing entirely.
+	if !ok {
+		for i := range c.sources {
+			if i == sourceIdx {
+				continue
+			}
+			otherVal, otherOk := c.prefixStates.Load(prefixKey{sourceIdx: i, prefix: prefix})
+			if otherOk {
+				otherState := otherVal.(*prefixState)
+				if otherState.hits.Load() > 0 {
+					// Another source serves this prefix. Pre-record a miss here
+					// so subsequent lookups skip without re-checking.
+					newVal, _ := c.prefixStates.LoadOrStore(prefixKey{sourceIdx: sourceIdx, prefix: prefix}, &prefixState{})
+					newVal.(*prefixState).misses.CompareAndSwap(0, 1)
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // awaitOrStartProbe coordinates concurrent lookups for the same (source, prefix).
