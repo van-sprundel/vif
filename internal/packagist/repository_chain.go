@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,7 +142,10 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		return c.fetchFromSource(ctx, cand.idx, cand.source, name, includeDev)
 	}
 
-	// Multiple eligible sources — query in parallel.
+	// Multiple eligible sources — query in parallel with early return.
+	// When any source returns a hit, we return immediately instead of waiting
+	// for all sources. This avoids blocking on slow "not found" responses from
+	// sources that don't serve the package.
 	type result struct {
 		idx      int
 		source   Fetcher
@@ -149,16 +153,16 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		err      error
 		duration time.Duration
 	}
-	results := make([]result, len(candidates))
-	var wg sync.WaitGroup
-	wg.Add(len(candidates))
+	lookupCtx, lookupCancel := context.WithCancel(ctx)
+	defer lookupCancel()
+
+	ch := make(chan result, len(candidates))
 	for j, cand := range candidates {
 		go func(j int, cand candidate) {
-			defer wg.Done()
 			// Apply probe gate within the goroutine so probes don't block parallelism.
-			isProber := c.awaitOrStartProbe(ctx, cand.idx, name)
+			isProber := c.awaitOrStartProbe(lookupCtx, cand.idx, name)
 			if !isProber && c.shouldSkipPrefix(cand.idx, name) {
-				results[j] = result{
+				ch <- result{
 					idx:    cand.idx,
 					source: cand.source,
 					err:    ErrPackageNotFound,
@@ -171,15 +175,15 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 				err      error
 			)
 			if devSource, ok := cand.source.(DevFetcher); ok {
-				versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
+				versions, err = devSource.GetPackageWithDev(lookupCtx, name, includeDev)
 			} else {
-				versions, err = cand.source.GetPackage(ctx, name)
+				versions, err = cand.source.GetPackage(lookupCtx, name)
 			}
 			c.recordPrefixResult(cand.idx, name, err)
 			if isProber {
 				c.finishProbe(cand.idx, name)
 			}
-			results[j] = result{
+			ch <- result{
 				idx:      cand.idx,
 				source:   cand.source,
 				versions: versions,
@@ -188,11 +192,23 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 			}
 		}(j, cand)
 	}
-	wg.Wait()
 
-	// Emit traces and pick the best result in priority order.
-	var lastNotFound, lastAuthErr, lastTransientErr error
-	for _, r := range results {
+	// Collect results, returning early on the first hit.
+	var collected []result
+	var hitResult *result
+	for range candidates {
+		r := <-ch
+		collected = append(collected, r)
+		if r.err == nil && hitResult == nil {
+			hitResult = &r
+			// Cancel remaining lookups — we have our answer.
+			lookupCancel()
+		}
+	}
+
+	// Emit traces in source-priority order (by idx) for deterministic output.
+	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
+	for _, r := range collected {
 		if c.trace != nil && r.duration > 0 {
 			c.trace(LookupTrace{
 				Source:   repositoryLabel(r.source),
@@ -201,22 +217,22 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 				Err:      r.err,
 			})
 		}
-		if r.err == nil {
-			return r.versions, nil
-		}
+	}
+
+	if hitResult != nil {
+		return hitResult.versions, nil
+	}
+
+	// No hit — classify errors.
+	var lastNotFound, lastAuthErr, lastTransientErr error
+	for _, r := range collected {
 		if errors.Is(r.err, ErrPackageNotFound) {
 			lastNotFound = r.err
-			continue
-		}
-		if errors.Is(r.err, ErrAuthRequired) {
+		} else if errors.Is(r.err, ErrAuthRequired) {
 			lastAuthErr = r.err
-			continue
-		}
-		if isTransientRepositoryError(r.err) {
+		} else if isTransientRepositoryError(r.err) {
 			lastTransientErr = r.err
-			continue
 		}
-		// Hard error from a source — but keep checking higher-priority hits.
 	}
 
 	if lastAuthErr != nil {
