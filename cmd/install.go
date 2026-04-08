@@ -18,6 +18,7 @@ import (
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/pkg"
 	"github.com/van-sprundel/vif/internal/platform"
+	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 )
 
@@ -45,9 +46,20 @@ func newInstallCmd() *cobra.Command {
 	return cmd
 }
 
-func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) error {
+func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
+
+	defer func() {
+		if retErr != nil && telemetry.Enabled() {
+			telemetry.Send(telemetry.Event{
+				Command:    "install",
+				Version:    Version,
+				DurationMs: time.Since(start).Milliseconds(),
+				ErrorType:  telemetry.ErrorCategory(retErr),
+			})
+		}
+	}()
 
 	// 1. Parse lockfile.
 	lockfilePath := "composer.lock"
@@ -247,6 +259,16 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) 
 
 	// 6. Summary.
 	ui.PrintSummary(w, total, start)
+
+	if telemetry.Enabled() {
+		telemetry.Send(telemetry.Event{
+			Command:      "install",
+			Version:      Version,
+			PackageCount: total,
+			DurationMs:   time.Since(start).Milliseconds(),
+			Success:      true,
+		})
+	}
 
 	return nil
 }

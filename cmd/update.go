@@ -16,6 +16,7 @@ import (
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
+	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 	"github.com/van-sprundel/vif/internal/version"
 )
@@ -44,9 +45,20 @@ func newUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, profile bool) error {
+func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, profile bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
+
+	defer func() {
+		if retErr != nil && telemetry.Enabled() {
+			telemetry.Send(telemetry.Event{
+				Command:    "update",
+				Version:    Version,
+				DurationMs: time.Since(start).Milliseconds(),
+				ErrorType:  telemetry.ErrorCategory(retErr),
+			})
+		}
+	}()
 
 	parseComposerStart := time.Now()
 	cj, err := composer.Parse("composer.json")
@@ -244,6 +256,32 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
 
 	ui.PrintSummary(w, len(resolved), start)
+
+	if telemetry.Enabled() {
+		ev := telemetry.Event{
+			Command:      "update",
+			Version:      Version,
+			PackageCount: len(resolved),
+			DurationMs:   time.Since(start).Milliseconds(),
+			Success:      true,
+			Phases: map[string]int64{
+				"parse":      parseComposerDuration.Milliseconds(),
+				"lockfile":   lockfileDuration.Milliseconds(),
+				"cache_init": cacheInitDuration.Milliseconds(),
+				"metadata":   metadataClientDuration.Milliseconds(),
+				"restrict":   restrictionsDuration.Milliseconds(),
+				"resolve":    resolveDuration.Milliseconds(),
+				"write_lock": lockfileWriteDuration.Milliseconds(),
+			},
+		}
+		if installProfile != nil {
+			ev.Phases["download"] = installProfile.Download.Milliseconds()
+			ev.Phases["install"] = installProfile.Install.Milliseconds()
+			ev.Phases["autoload"] = installProfile.Autoload.Milliseconds()
+		}
+		telemetry.Send(ev)
+	}
+
 	if profile {
 		sections := []ui.ProfileSection{
 			{Name: "parse composer.json", Duration: parseComposerDuration},

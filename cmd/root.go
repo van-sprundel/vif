@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/van-sprundel/vif/internal/telemetry"
 )
 
 var Version = "dev"
@@ -25,6 +26,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newInstallCmd())
 	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newRequireCmd())
+	root.AddCommand(newTelemetryCmd())
 
 	return root
 }
@@ -35,7 +37,11 @@ func Execute() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+	telemetry.Prompt()
+
+	err := newRootCmd().ExecuteContext(ctx)
+	telemetry.Wait()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

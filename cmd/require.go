@@ -14,6 +14,7 @@ import (
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
+	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 	versionPkg "github.com/van-sprundel/vif/internal/version"
 )
@@ -43,9 +44,20 @@ func newRequireCmd() *cobra.Command {
 	return cmd
 }
 
-func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader bool) error {
+func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
+
+	defer func() {
+		if retErr != nil && telemetry.Enabled() {
+			telemetry.Send(telemetry.Event{
+				Command:    "require",
+				Version:    Version,
+				DurationMs: time.Since(start).Milliseconds(),
+				ErrorType:  telemetry.ErrorCategory(retErr),
+			})
+		}
+	}()
 
 	composerPath := "composer.json"
 	cj, err := composer.Parse(composerPath)
@@ -207,6 +219,16 @@ func runRequire(ctx context.Context, args []string, dev, verbose, noAutoloader b
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
 
 	ui.PrintSummary(w, len(resolved), start)
+
+	if telemetry.Enabled() {
+		telemetry.Send(telemetry.Event{
+			Command:      "require",
+			Version:      Version,
+			PackageCount: len(resolved),
+			DurationMs:   time.Since(start).Milliseconds(),
+			Success:      true,
+		})
+	}
 
 	return nil
 }
