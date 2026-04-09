@@ -45,7 +45,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           BINARY=vif-${{ matrix.goos }}-${{ matrix.goarch }}
-          go build -ldflags="-s -w -X cmd.Version=${{ github.ref_name }}" -o ./dist/${BINARY} .
+          go build -ldflags="-s -w" -o ./dist/${BINARY} .
       - uses: actions/upload-artifact@v7
         with:
           name: vif-${{ matrix.goos }}-${{ matrix.goarch }}
