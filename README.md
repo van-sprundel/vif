@@ -8,6 +8,12 @@ A package manager for PHP similar to [Composer](https://getcomposer.org/)
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/van-sprundel/vif/master/install.sh | sh
+```
+
+Or with Go:
+
+```sh
 go install github.com/van-sprundel/vif@latest
 ```
 
