@@ -301,6 +301,18 @@ func (cj *ComposerJSON) AddRequireDev(name, constraint string) {
 	cj.syncRaw("require-dev", cj.RequireDev)
 }
 
+// RemoveRequire removes a package from the require section.
+func (cj *ComposerJSON) RemoveRequire(name string) {
+	delete(cj.Require, name)
+	cj.syncRaw("require", cj.Require)
+}
+
+// RemoveRequireDev removes a package from the require-dev section.
+func (cj *ComposerJSON) RemoveRequireDev(name string) {
+	delete(cj.RequireDev, name)
+	cj.syncRaw("require-dev", cj.RequireDev)
+}
+
 // syncRaw updates the raw JSON map for content-hash recomputation.
 func (cj *ComposerJSON) syncRaw(key string, val interface{}) {
 	data, err := marshalJSON(val)
