@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"path/filepath"
+
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
+	"github.com/van-sprundel/vif/internal/scripts"
 	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 )
@@ -25,6 +28,7 @@ func newRemoveCmd() *cobra.Command {
 		noUpdate     bool
 		verbose      bool
 		noAutoloader bool
+		noScripts    bool
 	)
 
 	cmd := &cobra.Command{
@@ -34,7 +38,7 @@ func newRemoveCmd() *cobra.Command {
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRemove(cmd.Context(), args, dev, noUpdate, verbose, noAutoloader)
+			return runRemove(cmd.Context(), args, dev, noUpdate, verbose, noAutoloader, noScripts)
 		},
 	}
 
@@ -42,11 +46,12 @@ func newRemoveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noUpdate, "no-update", false, "only remove from composer.json, skip dependency update")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
+	cmd.Flags().BoolVar(&noScripts, "no-scripts", false, "skip execution of scripts defined in composer.json")
 
 	return cmd
 }
 
-func runRemove(ctx context.Context, packages []string, dev, noUpdate, verbose, noAutoloader bool) (retErr error) {
+func runRemove(ctx context.Context, packages []string, dev, noUpdate, verbose, noAutoloader, noScripts bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
 
@@ -227,6 +232,18 @@ func runRemove(ctx context.Context, packages []string, dev, noUpdate, verbose, n
 		return fmt.Errorf("write lockfile: %w", err)
 	}
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
+
+	// Run post-update-cmd scripts (remove fires update events, matching Composer behavior).
+	if !noScripts {
+		projectDir, _ := filepath.Abs(".")
+		runner := scripts.New(projectDir, cj.Scripts, cj.Extra.Symfony.AutoScripts, w)
+		if err := runner.Run("post-autoload-dump"); err != nil {
+			return err
+		}
+		if err := runner.Run("post-update-cmd"); err != nil {
+			return err
+		}
+	}
 
 	ui.PrintSummary(w, len(resolved), start)
 

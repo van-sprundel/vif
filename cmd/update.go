@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"path/filepath"
+
 	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/resolver"
+	"github.com/van-sprundel/vif/internal/scripts"
 	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 	"github.com/van-sprundel/vif/internal/version"
@@ -26,6 +29,7 @@ func newUpdateCmd() *cobra.Command {
 	var verbose bool
 	var noDev bool
 	var noAutoloader bool
+	var noScripts bool
 	var profile bool
 
 	cmd := &cobra.Command{
@@ -33,19 +37,20 @@ func newUpdateCmd() *cobra.Command {
 		Short:        "Resolve dependencies and update composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdate(cmd.Context(), args, verbose, noDev, noAutoloader, profile)
+			return runUpdate(cmd.Context(), args, verbose, noDev, noAutoloader, noScripts, profile)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
+	cmd.Flags().BoolVar(&noScripts, "no-scripts", false, "skip execution of scripts defined in composer.json")
 	cmd.Flags().BoolVar(&profile, "profile", false, "print per-phase timings and slowest packages")
 
 	return cmd
 }
 
-func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, profile bool) (retErr error) {
+func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, noScripts bool, profile bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
 
@@ -254,6 +259,18 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 	}
 	lockfileWriteDuration := time.Since(lockfileWriteStart)
 	fmt.Fprintf(w, "Wrote %s\n", lockPath)
+
+	// Run post-update-cmd scripts.
+	if !noScripts {
+		projectDir, _ := filepath.Abs(".")
+		runner := scripts.New(projectDir, cj.Scripts, cj.Extra.Symfony.AutoScripts, w)
+		if err := runner.Run("post-autoload-dump"); err != nil {
+			return err
+		}
+		if err := runner.Run("post-update-cmd"); err != nil {
+			return err
+		}
+	}
 
 	ui.PrintSummary(w, len(resolved), start)
 

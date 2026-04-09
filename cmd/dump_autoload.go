@@ -10,6 +10,7 @@ import (
 	"github.com/van-sprundel/vif/internal/autoload"
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/lockfile"
+	"github.com/van-sprundel/vif/internal/scripts"
 	"github.com/van-sprundel/vif/internal/telemetry"
 )
 
@@ -19,6 +20,7 @@ func newDumpAutoloadCmd() *cobra.Command {
 		optimize      bool
 		authoritative bool
 		noDev         bool
+		noScripts     bool
 	)
 
 	cmd := &cobra.Command{
@@ -27,18 +29,19 @@ func newDumpAutoloadCmd() *cobra.Command {
 		Short:        "Regenerate the autoloader",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDumpAutoload(optimize, authoritative, noDev)
+			return runDumpAutoload(optimize, authoritative, noDev, noScripts)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&optimize, "optimize", "o", false, "optimize PSR-4/PSR-0 into classmap")
 	cmd.Flags().BoolVarP(&authoritative, "classmap-authoritative", "a", false, "only load from classmap (implies --optimize)")
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "exclude autoload-dev rules")
+	cmd.Flags().BoolVar(&noScripts, "no-scripts", false, "skip execution of scripts defined in composer.json")
 
 	return cmd
 }
 
-func runDumpAutoload(optimize, authoritative, noDev bool) (retErr error) {
+func runDumpAutoload(optimize, authoritative, noDev, noScripts bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
 
@@ -133,6 +136,15 @@ func runDumpAutoload(optimize, authoritative, noDev bool) (retErr error) {
 		fmt.Fprintln(w, " done (optimized)")
 	} else {
 		fmt.Fprintln(w, " done")
+	}
+
+	// Run post-autoload-dump scripts.
+	if !noScripts {
+		projectDir, _ := filepath.Abs(".")
+		runner := scripts.New(projectDir, cj.Scripts, cj.Extra.Symfony.AutoScripts, w)
+		if err := runner.Run("post-autoload-dump"); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(w, "Generated in %s\n", time.Since(start).Round(time.Millisecond))

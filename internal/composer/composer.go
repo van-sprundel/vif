@@ -28,6 +28,7 @@ type ComposerJSON struct {
 	MinimumStability string            `json:"minimum-stability"`
 	PreferStable     bool              `json:"prefer-stable"`
 	Config           composerConfig    `json:"config"`
+	Scripts          Scripts           `json:"scripts"`
 	Extra            composerExtra     `json:"extra"`
 
 	// raw holds the original decoded JSON for content-hash computation.
@@ -88,7 +89,36 @@ type composerExtra struct {
 }
 
 type composerExtraSymfony struct {
-	Require string `json:"require"`
+	Require     string            `json:"require"`
+	AutoScripts map[string]string `json:"auto-scripts"`
+}
+
+// Scripts maps event names (e.g. "post-install-cmd") to their handlers.
+// Each handler can be a single string or an array of strings in composer.json.
+type Scripts map[string][]string
+
+// UnmarshalJSON handles both string and []string forms for each event.
+func (s *Scripts) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = make(Scripts, len(raw))
+	for event, val := range raw {
+		// Try array first.
+		var arr []string
+		if err := json.Unmarshal(val, &arr); err == nil {
+			(*s)[event] = arr
+			continue
+		}
+		// Single string.
+		var str string
+		if err := json.Unmarshal(val, &str); err != nil {
+			return fmt.Errorf("scripts[%q]: expected string or []string: %w", event, err)
+		}
+		(*s)[event] = []string{str}
+	}
+	return nil
 }
 
 // PrependAutoloaderOrDefault returns the prepend-autoloader setting, defaulting to true.

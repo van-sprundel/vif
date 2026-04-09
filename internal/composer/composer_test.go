@@ -365,6 +365,79 @@ func TestParseRepositoriesEmpty(t *testing.T) {
 	}
 }
 
+func TestParseScriptsArray(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "test/scripts",
+		"scripts": {
+			"post-install-cmd": ["echo install", "@php bin/console cache:clear"],
+			"post-update-cmd": "echo update",
+			"custom": ["@post-install-cmd"]
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(cj.Scripts["post-install-cmd"]) != 2 {
+		t.Errorf("post-install-cmd handlers = %d, want 2", len(cj.Scripts["post-install-cmd"]))
+	}
+	if cj.Scripts["post-install-cmd"][0] != "echo install" {
+		t.Errorf("post-install-cmd[0] = %q", cj.Scripts["post-install-cmd"][0])
+	}
+
+	// Single string should be wrapped in array.
+	if len(cj.Scripts["post-update-cmd"]) != 1 {
+		t.Errorf("post-update-cmd handlers = %d, want 1", len(cj.Scripts["post-update-cmd"]))
+	}
+	if cj.Scripts["post-update-cmd"][0] != "echo update" {
+		t.Errorf("post-update-cmd[0] = %q", cj.Scripts["post-update-cmd"][0])
+	}
+}
+
+func TestParseScriptsEmpty(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{"name": "test/no-scripts"}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cj.Scripts) != 0 {
+		t.Errorf("len(Scripts) = %d, want 0", len(cj.Scripts))
+	}
+}
+
+func TestParseAutoScripts(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "test/auto-scripts",
+		"extra": {
+			"symfony": {
+				"require": "6.4.*",
+				"auto-scripts": {
+					"cache:clear": "symfony-cmd",
+					"assets:install %PUBLIC_DIR%": "symfony-cmd"
+				}
+			}
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(cj.Extra.Symfony.AutoScripts) != 2 {
+		t.Fatalf("AutoScripts = %d, want 2", len(cj.Extra.Symfony.AutoScripts))
+	}
+	if cj.Extra.Symfony.AutoScripts["cache:clear"] != "symfony-cmd" {
+		t.Errorf("AutoScripts[cache:clear] = %q", cj.Extra.Symfony.AutoScripts["cache:clear"])
+	}
+}
+
 func writeJSON(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(content), 0o644); err != nil {

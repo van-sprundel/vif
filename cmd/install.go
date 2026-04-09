@@ -18,6 +18,7 @@ import (
 	"github.com/van-sprundel/vif/internal/lockfile"
 	"github.com/van-sprundel/vif/internal/pkg"
 	"github.com/van-sprundel/vif/internal/platform"
+	"github.com/van-sprundel/vif/internal/scripts"
 	"github.com/van-sprundel/vif/internal/telemetry"
 	"github.com/van-sprundel/vif/internal/ui"
 )
@@ -27,6 +28,7 @@ func newInstallCmd() *cobra.Command {
 	var verbose bool
 	var noDev bool
 	var noAutoloader bool
+	var noScripts bool
 	var dryRun bool
 
 	cmd := &cobra.Command{
@@ -34,19 +36,20 @@ func newInstallCmd() *cobra.Command {
 		Short:        "Install packages from composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(cmd.Context(), verbose, noDev, noAutoloader, dryRun)
+			return runInstall(cmd.Context(), verbose, noDev, noAutoloader, noScripts, dryRun)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show per-package output")
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
+	cmd.Flags().BoolVar(&noScripts, "no-scripts", false, "skip execution of scripts defined in composer.json")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "simulate without installing")
 
 	return cmd
 }
 
-func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) (retErr error) {
+func runInstall(ctx context.Context, verbose, noDev, noAutoloader, noScripts, dryRun bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
 
@@ -257,7 +260,18 @@ func runInstall(ctx context.Context, verbose, noDev, noAutoloader, dryRun bool) 
 		fmt.Fprintln(w, " done")
 	}
 
-	// 6. Summary.
+	// 6. Run post-install-cmd scripts.
+	if !noScripts && cj != nil {
+		runner := scripts.New(projectDir, cj.Scripts, cj.Extra.Symfony.AutoScripts, w)
+		if err := runner.Run("post-autoload-dump"); err != nil {
+			return err
+		}
+		if err := runner.Run("post-install-cmd"); err != nil {
+			return err
+		}
+	}
+
+	// 7. Summary.
 	ui.PrintSummary(w, total, start)
 
 	if telemetry.Enabled() {
