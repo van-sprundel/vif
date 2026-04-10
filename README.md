@@ -35,81 +35,35 @@ Also, LLMs were only used for doing some of the source gathering. I am not plann
 
 ## Showcase
 
+I had let Claude ran `{composer|vif} update` against a few projects, and it had these key takeaways:
+
 ```bash
-> time composer update
-Loading composer repositories with package information
-Updating dependencies
-Lock file operations: 0 installs, 52 updates, 0 removals
-... (truncated)
-No security vulnerability advisories found.
+  Composer vs vif v0.4.2
 
-No security vulnerability advisories found.
-
-________________________________________________________
-Executed in   17.99 secs    fish           external
-   usr time    4.11 secs  588.00 micros    4.11 secs
-   sys time    1.62 secs  379.00 micros    1.62 secs
-
-# Now let's do vif
-
-> time ./vif update
-Resolving [207]
-Resolving done (0 packages, 7.14s)
-Resolved 142 packages
-Lock file operations: 0 installs, 52 updates, 0 removals, 90 unchanged
-Downloading [142/142]
-Downloading done (142 packages, 4ms)
-  0 downloaded, 141 from cache
-Installing to vendor...
-  141 installed, 0 updated, 0 removed, 0 skipped
-Generating autoload files... done
-Wrote composer.lock
-
-vif install completed: 142 packages in 8.42s
-
-________________________________________________________
-Executed in    8.45 secs    fish           external
-   usr time   31.45 secs  503.00 micros   31.45 secs
-   sys time    1.87 secs  352.00 micros    1.87 secs
+  ┌──────────┬────────────┬─────────────┬───────────────────────────────────────────────────────┐
+  │ Composer │ vif v0.4.2 │ faster?     │                         Notes                         │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 42s      │ 31s        │ 1.4x        │ Composer hit GitLab 429 rate limit                    │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 50s      │ 32s        │ 1.6x        │ Composer: unresolvable deps                           │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 48s      │ 6s         │ 8x          │ Both errored, vif bailed faster                       │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 40s      │ 47s        │ 0.9x        │ vif slower here                                       │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 39s      │ 21s        │ 1.9x        │ Both hit issues                                       │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 1m29s    │ 31s        │ 2.9x        │ Only repo where both actually worked                  │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 5s       │ —          │ —           │ Composer resolved (but unresolvable), vif parse error │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 35s      │ 15s        │ 2.3x        │ Both errored                                          │
+  ├──────────┼────────────┼─────────────┼───────────────────────────────────────────────────────┤
+  │ 39s      │ 15s        │ 2.6x        │ Both errored                                          │
+  └──────────┴────────────┴─────────────┴───────────────────────────────────────────────────────┘
 ```
 
-We're able to fail early in certain situations, meanwhile composer still churns away like it's doing fine.
-```sh
-> time composer update
-More deprecation notices were hidden, run again with `-v` to show them.
-Gathering patches for root package.
-Loading composer repositories with package information
-Updating dependencies
-Your requirements could not be resolved to an installable set of packages.
-
-  Problem 1
-    - Root composer.json requires drupal/core-recommended ^9.3 -> satisfiable by drupal/core-recommended[9.3.x-dev, 9.4.x-dev, 9.5.x-dev].
-    - drupal/core-recommended 9.3.x-dev requires symfony/http-foundation v4.4.34 -> found symfony/http-foundation[v4.4.34] but these were not loaded, because they are affected by security advisories ("PKSA-365x-2zjk-pt47", "PKSA-b35n-565h-rs4q"). Go to https://packagist.org/security-advisories/ to find advisory details. To ignore the advisories, add them to the audit "ignore" config. To turn the feature off entirely, you can set "block-insecure" to false in your "audit" config.
-    - drupal/core-recommended 9.4.x-dev requires twig/twig ~v2.15.3 -> found twig/twig[v2.15.3, v2.15.4, v2.15.5, v2.15.6] but these were not loaded, because they are affected by security advisories ("PKSA-yhcn-xrg3-68b1", "PKSA-2wrf-1xmk-1pky", "PKSA-6319-ffpf-gx66"). Go to https://packagist.org/security-advisories/ to find advisory details. To ignore the advisories, add them to the audit "ignore" config. To turn the feature off entirely, you can set "block-insecure" to false in your "audit" config.
-    - drupal/core-recommended 9.5.x-dev requires twig/twig ~v2.15.4 -> found twig/twig[v2.15.4, v2.15.5, v2.15.6] but these were not loaded, because they are affected by security advisories ("PKSA-yhcn-xrg3-68b1", "PKSA-2wrf-1xmk-1pky", "PKSA-6319-ffpf-gx66"). Go to https://packagist.org/security-advisories/ to find advisory details. To ignore the advisories, add them to the audit "ignore" config. To turn the feature off entirely, you can set "block-insecure" to false in your "audit" config.
-
-Use the option --with-all-dependencies (-W) to allow upgrades, downgrades and removals for packages currently locked to specific versions.
-
-________________________________________________________
-Executed in  113.39 secs    fish           external
-   usr time    4.32 secs  719.00 micros    4.32 secs
-   sys time    0.31 secs  425.00 micros    0.31 secs
-
-# Now let's try vif
-
-> time ./vif update
-Resolving dependencies for drupal-composer/drupal-project...
-Resolving [396]
-Resolving done (0 packages, 85.87s)
-resolve: resolver: no version of drupal/core-recommended could satisfy all constraints
-
-________________________________________________________
-Executed in  85.93 secs    fish           external
-   usr time   35.55 secs  746.00 micros   35.55 secs
-   sys time    1.85 secs  830.00 micros    1.85 secs
-```
-
-While it is *technically* faster, the current resolve is not fast at all... we need to do a deeper dive into why, but that's for later.
+Right now vif is running into a bunch of scripting errors. Granted, it stopped early when possible.
 
 ## Sources
 
