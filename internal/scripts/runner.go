@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/van-sprundel/vif/internal/composer"
 )
+
+// execError wraps errors from running shell commands / PHP callbacks.
+// These are non-fatal: the script was valid but the command failed at runtime.
+type execError struct {
+	err error
+}
+
+func (e *execError) Error() string { return e.err.Error() }
+func (e *execError) Unwrap() error { return e.err }
 
 // Runner executes Composer script events.
 type Runner struct {
@@ -44,6 +54,11 @@ func (r *Runner) Run(event string) error {
 
 	for _, handler := range handlers {
 		if err := r.runHandler(handler); err != nil {
+			var ee *execError
+			if errors.As(err, &ee) {
+				fmt.Fprintf(r.w, "  Warning: %s: %v\n", event, err)
+				continue
+			}
 			return fmt.Errorf("script %s: %w", event, err)
 		}
 	}
@@ -51,7 +66,7 @@ func (r *Runner) Run(event string) error {
 	// Run Symfony auto-scripts for post-install-cmd and post-update-cmd.
 	if r.hasAutoScripts(event) {
 		if err := r.runAutoScripts(); err != nil {
-			return fmt.Errorf("script %s (auto-scripts): %w", event, err)
+			fmt.Fprintf(r.w, "  Warning: auto-script %s: %v\n", event, err)
 		}
 	}
 
@@ -73,13 +88,19 @@ func (r *Runner) runHandler(handler string) error {
 		fmt.Fprintf(r.w, "  Skipping @composer command: %s\n", handler)
 		return nil
 	case strings.HasPrefix(handler, "@php "):
-		return r.runShell("php " + handler[5:])
+		if err := r.runShell("php " + handler[5:]); err != nil {
+			return &execError{err: err}
+		}
+		return nil
 	case strings.HasPrefix(handler, "@"):
 		return r.runReference(handler[1:])
 	case strings.Contains(handler, "::"):
 		return r.runPHPCallback(handler)
 	default:
-		return r.runShell(handler)
+		if err := r.runShell(handler); err != nil {
+			return &execError{err: err}
+		}
+		return nil
 	}
 }
 
@@ -117,7 +138,10 @@ func (r *Runner) runPHPCallback(handler string) error {
 		filepath.Join(r.projectDir, "vendor", "autoload.php"),
 		handler,
 	)
-	return r.runShell(fmt.Sprintf("php -r %q", code))
+	if err := r.runShell(fmt.Sprintf("php -r %q", code)); err != nil {
+		return &execError{err: fmt.Errorf("%s: %w", handler, err)}
+	}
+	return nil
 }
 
 func (r *Runner) runShell(command string) error {

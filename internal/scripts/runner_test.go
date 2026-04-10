@@ -130,7 +130,7 @@ func TestRunUnknownReference(t *testing.T) {
 	}
 }
 
-func TestRunFailingCommand(t *testing.T) {
+func TestRunFailingCommandWarns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell tests require unix")
 	}
@@ -140,8 +140,11 @@ func TestRunFailingCommand(t *testing.T) {
 	}, nil, &buf)
 
 	err := r.Run("post-install-cmd")
-	if err == nil {
-		t.Fatal("expected error for failing command")
+	if err != nil {
+		t.Fatalf("Run should not return error for failing command, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Warning") {
+		t.Errorf("output = %q, want warning about failed command", buf.String())
 	}
 }
 
@@ -171,16 +174,13 @@ func TestRunAutoScripts(t *testing.T) {
 	r := New(t.TempDir(), composer.Scripts{}, autoScripts, &buf)
 
 	if err := r.Run("post-install-cmd"); err != nil {
-		// php might not be available; that's fine for this test.
-		// Check that it at least attempted the commands.
-		if !strings.Contains(buf.String(), "php bin/console cache:clear") {
-			t.Errorf("output = %q, want attempt at 'php bin/console cache:clear'", buf.String())
-		}
-		return
+		t.Fatalf("Run: %v", err)
 	}
-	// If php is available, verify output. If not, the error case above handles it.
-	if !strings.Contains(buf.String(), "from-auto") {
-		t.Errorf("output = %q, want 'from-auto' from script-type auto-script", buf.String())
+
+	out := buf.String()
+	// Check that it attempted the symfony-cmd.
+	if !strings.Contains(out, "php bin/console cache:clear") {
+		t.Errorf("output = %q, want attempt at 'php bin/console cache:clear'", out)
 	}
 }
 

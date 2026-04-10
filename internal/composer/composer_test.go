@@ -410,6 +410,36 @@ func TestParseScriptsEmpty(t *testing.T) {
 	}
 }
 
+func TestParseScriptsObjectMap(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	writeJSON(t, dir, `{
+		"name": "test/scripts-object",
+		"scripts": {
+			"post-install-cmd": ["@auto-scripts"],
+			"post-update-cmd": ["@auto-scripts"],
+			"auto-scripts": {
+				"cache:clear": "symfony-cmd",
+				"assets:install %PUBLIC_DIR%": "symfony-cmd"
+			}
+		}
+	}`)
+
+	cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Object-form scripts are silently skipped.
+	if _, ok := cj.Scripts["auto-scripts"]; ok {
+		t.Error("auto-scripts should not be stored as a script handler")
+	}
+
+	// Regular string/array scripts still parse correctly.
+	if len(cj.Scripts["post-install-cmd"]) != 1 {
+		t.Errorf("post-install-cmd handlers = %d, want 1", len(cj.Scripts["post-install-cmd"]))
+	}
+}
+
 func TestParseAutoScripts(t *testing.T) {
 	dir := testhelper.TempDir(t, "composer")
 	writeJSON(t, dir, `{

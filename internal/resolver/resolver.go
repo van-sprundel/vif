@@ -78,6 +78,25 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	versionCache := make(map[string]candidateCacheEntry, len(rootNames)*4)
 	var versionCacheMu sync.RWMutex
 
+	// Deduplicated progress: both prefetch and solver may attempt to fetch
+	// the same package concurrently (race between cache population and cache
+	// miss). Wrap the callback so each package is reported at most once.
+	var deduped func(string)
+	if progress != nil {
+		var progressMu sync.Mutex
+		reported := make(map[string]bool, len(rootNames)*4)
+		deduped = func(name string) {
+			progressMu.Lock()
+			if reported[name] {
+				progressMu.Unlock()
+				return
+			}
+			reported[name] = true
+			progressMu.Unlock()
+			progress(name)
+		}
+	}
+
 	// Start prefetch in background — it populates the cache incrementally as
 	// each package's metadata arrives. The solver starts immediately and uses
 	// cache hits from prefetch; on cache miss it fetches on demand. This means
@@ -89,7 +108,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	go func() {
 		defer prefetchWg.Done()
 		prefetchInto(prefetchCtx, client, rootNames, versionCache, &versionCacheMu,
-			cj.PreferStable, minimumStability, opts.LockedEntries, progress, opts.LookupDone)
+			cj.PreferStable, minimumStability, opts.LockedEntries, deduped, opts.LookupDone)
 	}()
 
 	r := &resolver{
@@ -107,9 +126,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		rootConflicts:    buildRootConflicts(cj.Conflict),
 		versionCache:     versionCache,
 		versionCacheMu:   &versionCacheMu,
-		// progress is nil during solve to avoid double-reporting; prefetch
-		// already reports each package lookup via the progress callback.
-		progress: nil,
+		progress:         deduped,
 		// solveProgress reports selected requirements during the backtracking phase.
 		solveProgress:        opts.SolveProgress,
 		providedVersionCache: make(map[string]providedVersion),

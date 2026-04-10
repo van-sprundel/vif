@@ -97,7 +97,9 @@ type composerExtraSymfony struct {
 // Each handler can be a single string or an array of strings in composer.json.
 type Scripts map[string][]string
 
-// UnmarshalJSON handles both string and []string forms for each event.
+// UnmarshalJSON handles string, []string, and object forms for each event.
+// Object maps (e.g. Symfony Flex auto-scripts) are silently skipped since
+// they are handled separately via extra.symfony.auto-scripts.
 func (s *Scripts) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -113,10 +115,16 @@ func (s *Scripts) UnmarshalJSON(data []byte) error {
 		}
 		// Single string.
 		var str string
-		if err := json.Unmarshal(val, &str); err != nil {
-			return fmt.Errorf("scripts[%q]: expected string or []string: %w", event, err)
+		if err := json.Unmarshal(val, &str); err == nil {
+			(*s)[event] = []string{str}
+			continue
 		}
-		(*s)[event] = []string{str}
+		// Object map (e.g. auto-scripts): skip silently.
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(val, &obj); err != nil {
+			return fmt.Errorf("scripts[%q]: unsupported format: %w", event, err)
+		}
+		// Not stored — object-form scripts are not executable as handlers.
 	}
 	return nil
 }
