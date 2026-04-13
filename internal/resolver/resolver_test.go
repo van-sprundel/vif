@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -552,6 +554,46 @@ func TestResolveFiltersPlatformFromTransitive(t *testing.T) {
 	}
 }
 
+func TestResolveHonorsConfigPlatformPHPOverride(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"php": ">=8.5"})
+	reg.add("acme/foo", "1.9.0", map[string]string{"php": ">=8.4"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	composerPath := filepath.Join(dir, "composer.json")
+	if err := os.WriteFile(composerPath, []byte(`{
+		"name": "test/project",
+		"require": {
+			"acme/foo": ">=1.0"
+		},
+		"config": {
+			"platform": {
+				"php": "8.4.1"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj, err := composer.Parse(composerPath)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/foo"].Version != "1.9.0" {
+		t.Fatalf("version = %q, want 1.9.0", byName["acme/foo"].Version)
+	}
+}
+
 func TestResolveStabilityFiltering(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "2.0.0-beta1", nil)
@@ -587,6 +629,55 @@ func TestResolveStabilityFiltering(t *testing.T) {
 	byName = indexByName(resolved)
 	if byName["acme/foo"].Version != "2.0.0-beta1" {
 		t.Errorf("version = %q, want 2.0.0-beta1", byName["acme/foo"].Version)
+	}
+}
+
+func TestResolveCanIgnorePlatformRequirements(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"php": ">=8.1"})
+	reg.add("acme/foo", "1.9.0", map[string]string{"php": ">=7.2"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	composerPath := filepath.Join(dir, "composer.json")
+	if err := os.WriteFile(composerPath, []byte(`{
+		"name": "test/project",
+		"require": {
+			"acme/foo": ">=1.0"
+		},
+		"minimum-stability": "stable",
+		"config": {
+			"platform": {
+				"php": "7.2.9"
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj, err := composer.Parse(composerPath)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := indexByName(resolved)["acme/foo"].Version; got != "1.9.0" {
+		t.Fatalf("version without ignore-platform-reqs = %q, want 1.9.0", got)
+	}
+
+	resolved, err = resolver.ResolveWithOptions(context.Background(), cj, packagist.NewClient(srv.URL), resolver.Options{
+		IgnorePlatformReqs: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("ResolveWithOptions: %v", err)
+	}
+	if got := indexByName(resolved)["acme/foo"].Version; got != "2.0.0" {
+		t.Fatalf("version with ignore-platform-reqs = %q, want 2.0.0", got)
 	}
 }
 

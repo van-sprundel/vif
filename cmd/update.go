@@ -30,6 +30,7 @@ func newUpdateCmd() *cobra.Command {
 	var noDev bool
 	var noAutoloader bool
 	var noScripts bool
+	var ignorePlatformReqs bool
 	var profile bool
 
 	cmd := &cobra.Command{
@@ -37,7 +38,7 @@ func newUpdateCmd() *cobra.Command {
 		Short:        "Resolve dependencies and update composer.lock",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdate(cmd.Context(), args, verbose, noDev, noAutoloader, noScripts, profile)
+			return runUpdate(cmd.Context(), args, verbose, noDev, noAutoloader, noScripts, ignorePlatformReqs, profile)
 		},
 	}
 
@@ -45,12 +46,13 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noDev, "no-dev", false, "skip dev dependencies")
 	cmd.Flags().BoolVar(&noAutoloader, "no-autoloader", false, "skip autoloader generation")
 	cmd.Flags().BoolVar(&noScripts, "no-scripts", false, "skip execution of scripts defined in composer.json")
+	cmd.Flags().BoolVar(&ignorePlatformReqs, "ignore-platform-reqs", false, "ignore php/ext platform requirements while resolving")
 	cmd.Flags().BoolVar(&profile, "profile", false, "print per-phase timings and slowest packages")
 
 	return cmd
 }
 
-func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, noScripts bool, profile bool) (retErr error) {
+func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool, noAutoloader bool, noScripts bool, ignorePlatformReqs bool, profile bool) (retErr error) {
 	start := time.Now()
 	w := os.Stderr
 
@@ -205,6 +207,7 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 	resolveStart := time.Now()
 	resolved, err := resolver.ResolveWithOptions(ctx, cj, client, resolver.Options{
 		Fixed:              fixed,
+		IgnorePlatformReqs: ignorePlatformReqs,
 		RestrictedPackages: restrictedPackages,
 		Restriction:        restriction,
 		LockedEntries:      lockedEntries,

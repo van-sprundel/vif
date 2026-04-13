@@ -33,6 +33,7 @@ type lockFileOut struct {
 	PreferLowest     bool              `json:"prefer-lowest"`
 	Platform         json.RawMessage   `json:"platform"`
 	PlatformDev      json.RawMessage   `json:"platform-dev"`
+	PlatformOverride json.RawMessage   `json:"platform-overrides,omitempty"`
 	PluginAPIVersion string            `json:"plugin-api-version,omitempty"`
 }
 
@@ -191,6 +192,7 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 		PreferLowest:     false,
 		Platform:         mustMarshalObject(cj.PlatformRequire()),
 		PlatformDev:      mustMarshalObject(cj.PlatformRequireDev()),
+		PlatformOverride: mustMarshalOptionalObject(cj.Config.Platform),
 		PluginAPIVersion: existing.pluginAPIVersion,
 	}
 
@@ -286,6 +288,14 @@ func mustMarshalObject(v interface{}) json.RawMessage {
 	data, err := marshalJSON(v)
 	if err != nil {
 		return json.RawMessage(`{}`)
+	}
+	return data
+}
+
+func mustMarshalOptionalObject(v interface{}) json.RawMessage {
+	data, err := marshalJSON(v)
+	if err != nil || string(data) == "{}" || string(data) == "null" {
+		return nil
 	}
 	return data
 }

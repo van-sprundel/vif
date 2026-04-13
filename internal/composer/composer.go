@@ -40,9 +40,49 @@ type ComposerJSON struct {
 
 // composerConfig holds the config section of composer.json.
 type composerConfig struct {
-	OptimizeAutoloader bool       `json:"optimize-autoloader"`
-	PrependAutoloader  *bool      `json:"prepend-autoloader,omitempty"`
-	PlatformCheck      *boolOrStr `json:"platform-check,omitempty"`
+	OptimizeAutoloader bool        `json:"optimize-autoloader"`
+	PrependAutoloader  *bool       `json:"prepend-autoloader,omitempty"`
+	PlatformCheck      *boolOrStr  `json:"platform-check,omitempty"`
+	Platform           platformMap `json:"platform,omitempty"`
+}
+
+type platformMap map[string]platformValue
+
+type platformValue struct {
+	String   string
+	Bool     bool
+	IsString bool
+	IsBool   bool
+}
+
+func (v *platformValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v.String = s
+		v.IsString = true
+		v.IsBool = false
+		return nil
+	}
+
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		v.Bool = b
+		v.IsBool = true
+		v.IsString = false
+		return nil
+	}
+
+	return fmt.Errorf("platform value: unsupported JSON shape %s", strings.TrimSpace(string(data)))
+}
+
+func (v platformValue) MarshalJSON() ([]byte, error) {
+	if v.IsString {
+		return json.Marshal(v.String)
+	}
+	if v.IsBool {
+		return json.Marshal(v.Bool)
+	}
+	return []byte("null"), nil
 }
 
 type boolOrStr struct {
@@ -228,6 +268,31 @@ func (cj *ComposerJSON) PlatformRequire() map[string]string {
 // PlatformRequireDev returns only platform requirements from require-dev.
 func (cj *ComposerJSON) PlatformRequireDev() map[string]string {
 	return filterOnlyPlatform(cj.RequireDev)
+}
+
+// PlatformOverrides returns string-valued config.platform overrides, such as
+// pinned PHP or extension versions, for use during dependency resolution.
+func (cj *ComposerJSON) PlatformOverrides() map[string]string {
+	out := make(map[string]string, len(cj.Config.Platform))
+	for name, value := range cj.Config.Platform {
+		if !pkg.IsPlatformPackage(name) || !value.IsString {
+			continue
+		}
+		out[name] = value.String
+	}
+	return out
+}
+
+// DisabledPlatformPackages returns config.platform entries explicitly set to false.
+func (cj *ComposerJSON) DisabledPlatformPackages() map[string]bool {
+	out := make(map[string]bool)
+	for name, value := range cj.Config.Platform {
+		if !pkg.IsPlatformPackage(name) || !value.IsBool || value.Bool {
+			continue
+		}
+		out[name] = true
+	}
+	return out
 }
 
 func filterPlatform(deps map[string]string) map[string]string {

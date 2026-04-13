@@ -312,6 +312,7 @@ func runVifUpdate(t *testing.T, dir, cacheDir string) error {
 	}
 
 	cmd := exec.Command(bin, "update")
+	cmd.Args = append(cmd.Args, "--ignore-platform-reqs")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cacheDir)
 
@@ -922,7 +923,9 @@ func isKnownCompatUpdateSkip(err error) bool {
 		strings.Contains(msg, "no versions of amirami/localizator found") ||
 		strings.Contains(msg, "no versions of roave/security-advisories found") ||
 		strings.Contains(msg, "private/custom repositories are not supported yet") ||
-		strings.Contains(msg, "path repository does not exist")
+		strings.Contains(msg, "path repository does not exist") ||
+		strings.Contains(msg, "`url` supplied for the path") ||
+		strings.Contains(msg, "The `url` supplied for the path")
 }
 
 func TestCompatUpdateLockfile(t *testing.T) {

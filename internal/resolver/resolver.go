@@ -30,6 +30,8 @@ type Options struct {
 	// Fixed maps package name -> version that must be selected.
 	// When set, candidates are filtered to that exact version.
 	Fixed map[string]string
+	// IgnorePlatformReqs skips php/ext platform filtering during resolution.
+	IgnorePlatformReqs bool
 	// Locked maps package name -> currently locked version. When set, the
 	// resolver prefers the locked version over newer candidates when it still
 	// satisfies all constraints.
@@ -112,21 +114,24 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	}()
 
 	r := &resolver{
-		ctx:              ctx,
-		client:           client,
-		minimumStability: minimumStability,
-		preferStable:     cj.PreferStable,
-		fixed:            opts.Fixed,
-		locked:           opts.Locked,
-		lockedEntries:    opts.LockedEntries,
-		rootProvide:      cj.Provide,
-		rootReplace:      cj.Replace,
-		rootConflict:     cj.Conflict,
-		rootSatisfiers:   buildRootSatisfiers(cj.Provide, cj.Replace),
-		rootConflicts:    buildRootConflicts(cj.Conflict),
-		versionCache:     versionCache,
-		versionCacheMu:   &versionCacheMu,
-		progress:         deduped,
+		ctx:                ctx,
+		client:             client,
+		ignorePlatformReqs: opts.IgnorePlatformReqs,
+		minimumStability:   minimumStability,
+		preferStable:       cj.PreferStable,
+		platformOverrides:  cj.PlatformOverrides(),
+		platformDisabled:   cj.DisabledPlatformPackages(),
+		fixed:              opts.Fixed,
+		locked:             opts.Locked,
+		lockedEntries:      opts.LockedEntries,
+		rootProvide:        cj.Provide,
+		rootReplace:        cj.Replace,
+		rootConflict:       cj.Conflict,
+		rootSatisfiers:     buildRootSatisfiers(cj.Provide, cj.Replace),
+		rootConflicts:      buildRootConflicts(cj.Conflict),
+		versionCache:       versionCache,
+		versionCacheMu:     &versionCacheMu,
+		progress:           deduped,
 		// solveProgress reports selected requirements during the backtracking phase.
 		solveProgress:        opts.SolveProgress,
 		providedVersionCache: make(map[string]providedVersion),
@@ -308,8 +313,11 @@ type conflict struct {
 type resolver struct {
 	ctx                  context.Context
 	client               packagist.Fetcher
+	ignorePlatformReqs   bool
 	minimumStability     version.Stability
 	preferStable         bool
+	platformOverrides    map[string]string
+	platformDisabled     map[string]bool
 	fixed                map[string]string
 	locked               map[string]string
 	lockedEntries        map[string]packagist.VersionEntry
@@ -804,6 +812,9 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 		if err != nil {
 			continue
 		}
+		if !r.entryMatchesPlatform(entry) {
+			continue
+		}
 		candidates = append(candidates, candidate{
 			entry:        entry,
 			version:      v,
@@ -893,6 +904,14 @@ func filterByStability(candidates []candidate, minStability version.Stability) [
 }
 
 func (r *resolver) filterCandidates(name string, candidates []candidate) []candidate {
+	filteredByPlatform := candidates[:0]
+	for _, candidate := range candidates {
+		if r.entryMatchesPlatform(candidate.entry) {
+			filteredByPlatform = append(filteredByPlatform, candidate)
+		}
+	}
+	candidates = filteredByPlatform
+
 	if fixedVersion, ok := r.fixed[name]; ok && fixedVersion != "" {
 		filtered := candidates[:0]
 		for _, candidate := range candidates {
@@ -917,6 +936,48 @@ func (r *resolver) filterCandidates(name string, candidates []candidate) []candi
 		}
 	}
 	return filtered
+}
+
+func (r *resolver) entryMatchesPlatform(entry packagist.VersionEntry) bool {
+	if r.ignorePlatformReqs {
+		return true
+	}
+	for name, raw := range entry.Require {
+		if !pkg.IsPlatformPackage(name) {
+			continue
+		}
+		if !r.platformRequirementSatisfied(name, raw) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *resolver) platformRequirementSatisfied(name, raw string) bool {
+	if r.platformDisabled[name] {
+		return false
+	}
+
+	override, ok := r.platformOverrides[name]
+	if !ok {
+		return true
+	}
+
+	if raw == "" || raw == "*" {
+		return true
+	}
+
+	constraint, err := version.ParseConstraint(raw)
+	if err != nil {
+		return true
+	}
+
+	v, err := version.Parse(override)
+	if err != nil {
+		return true
+	}
+
+	return constraint.Matches(v)
 }
 
 func mergePendingRequirements(req requirement, rest []requirement) (requirement, []requirement, []version.Constraint) {

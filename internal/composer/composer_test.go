@@ -39,7 +39,11 @@ func TestParseComposerJSON(t *testing.T) {
 			}
 		},
 		"config": {
-			"sort-packages": true
+			"sort-packages": true,
+			"platform": {
+				"php": "8.4.1",
+				"ext-imagick": false
+			}
 		}
 	}`)
 
@@ -86,6 +90,12 @@ func TestParseComposerJSON(t *testing.T) {
 	}
 	if cj.Extra.Symfony.Require != "6.4.*" {
 		t.Errorf("Extra.Symfony.Require = %q, want %q", cj.Extra.Symfony.Require, "6.4.*")
+	}
+	if cj.PlatformOverrides()["php"] != "8.4.1" {
+		t.Errorf("PlatformOverrides()[php] = %q, want %q", cj.PlatformOverrides()["php"], "8.4.1")
+	}
+	if !cj.DisabledPlatformPackages()["ext-imagick"] {
+		t.Error("DisabledPlatformPackages should include ext-imagick")
 	}
 }
 

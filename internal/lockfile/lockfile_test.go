@@ -510,6 +510,7 @@ func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
 		Packages         []map[string]json.RawMessage `json:"packages"`
 		Platform         map[string]string            `json:"platform"`
 		PlatformDev      map[string]string            `json:"platform-dev"`
+		PlatformOverride map[string]json.RawMessage   `json:"platform-overrides"`
 		PluginAPIVersion string                       `json:"plugin-api-version"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -531,8 +532,72 @@ func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
 	if out.PlatformDev["ext-xdebug"] != "*" {
 		t.Fatalf("platform-dev[ext-xdebug] = %q, want *", out.PlatformDev["ext-xdebug"])
 	}
+	if len(out.PlatformOverride) != 0 {
+		t.Fatalf("platform-overrides = %v, want empty", out.PlatformOverride)
+	}
 	if out.PluginAPIVersion != "2.9.0" {
 		t.Fatalf("plugin-api-version = %q, want 2.9.0", out.PluginAPIVersion)
+	}
+}
+
+func TestGenerateWritesPlatformOverridesFromComposerConfig(t *testing.T) {
+	dir := testhelper.TempDir(t, "lockfile")
+	path := filepath.Join(dir, "composer.lock")
+	composerPath := filepath.Join(dir, "composer.json")
+
+	if err := os.WriteFile(composerPath, []byte(`{
+		"name": "test/project",
+		"require": {
+			"php": "^8.4",
+			"acme/foo": "^1.0"
+		},
+		"config": {
+			"platform": {
+				"php": "8.4.1",
+				"ext-xdebug": false
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj, err := composer.Parse(composerPath)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "acme/foo",
+			Version: "1.0.0",
+			Entry: packagist.VersionEntry{
+				Name:    "acme/foo",
+				Version: "1.0.0",
+			},
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var out struct {
+		PlatformOverride map[string]json.RawMessage `json:"platform-overrides"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got := string(out.PlatformOverride["php"]); got != `"8.4.1"` {
+		t.Fatalf("platform-overrides[php] = %s, want %q", got, `"8.4.1"`)
+	}
+	if got := string(out.PlatformOverride["ext-xdebug"]); got != "false" {
+		t.Fatalf("platform-overrides[ext-xdebug] = %s, want false", got)
 	}
 }
 
