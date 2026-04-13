@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 
@@ -94,6 +96,14 @@ func runSelfUpdate() error {
 	// Atomic replace: rename old, rename new, remove old.
 	oldPath := execPath + ".old"
 	if err := os.Rename(execPath, oldPath); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			fmt.Fprintln(w, "Permission denied, retrying with sudo...")
+			if err := sudoReplace(newBinary, execPath, info.Mode()); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "Updated to %s\n", release.TagName)
+			return nil
+		}
 		return fmt.Errorf("backup current binary: %w", err)
 	}
 
@@ -110,6 +120,32 @@ func runSelfUpdate() error {
 	_ = os.Remove(oldPath)
 
 	fmt.Fprintf(w, "Updated to %s\n", release.TagName)
+	return nil
+}
+
+func sudoReplace(newBinary, execPath string, mode os.FileMode) error {
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("sudo not found, please run as root or install to a user-writable location")
+	}
+
+	// Use sudo to copy the new binary into place and set permissions.
+	cp := exec.Command(sudo, "cp", newBinary, execPath)
+	cp.Stdin = os.Stdin
+	cp.Stdout = os.Stderr
+	cp.Stderr = os.Stderr
+	if err := cp.Run(); err != nil {
+		return fmt.Errorf("sudo cp: %w", err)
+	}
+
+	chmod := exec.Command(sudo, "chmod", fmt.Sprintf("%o", mode.Perm()), execPath)
+	chmod.Stdin = os.Stdin
+	chmod.Stdout = os.Stderr
+	chmod.Stderr = os.Stderr
+	if err := chmod.Run(); err != nil {
+		return fmt.Errorf("sudo chmod: %w", err)
+	}
+
 	return nil
 }
 
