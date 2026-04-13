@@ -129,7 +129,17 @@ func sudoReplace(newBinary, execPath string, mode os.FileMode) error {
 		return fmt.Errorf("sudo not found, please run as root or install to a user-writable location")
 	}
 
-	// Use sudo to copy the new binary into place and set permissions.
+	// Remove the running binary first — Linux allows unlinking a running
+	// executable but not overwriting it ("Text file busy").
+	rm := exec.Command(sudo, "rm", "-f", execPath)
+	rm.Stdin = os.Stdin
+	rm.Stdout = os.Stderr
+	rm.Stderr = os.Stderr
+	if err := rm.Run(); err != nil {
+		return fmt.Errorf("sudo rm: %w", err)
+	}
+
+	// Copy the new binary into place.
 	cp := exec.Command(sudo, "cp", newBinary, execPath)
 	cp.Stdin = os.Stdin
 	cp.Stdout = os.Stderr
