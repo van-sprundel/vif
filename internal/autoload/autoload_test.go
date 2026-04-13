@@ -353,6 +353,9 @@ func TestGenerateAutoloadRuntimeWhenSymfonyRuntimePresent(t *testing.T) {
 	if !strings.Contains(content, "require_once __DIR__.'/autoload.php'") {
 		t.Fatalf("autoload_runtime.php missing autoload require: %s", content)
 	}
+	if strings.Contains(content, "'disable_dotenv' => true") {
+		t.Fatalf("autoload_runtime.php should not disable dotenv: %s", content)
+	}
 }
 
 func TestGenerateNoAutoloadRuntimeWithoutSymfonyRuntime(t *testing.T) {

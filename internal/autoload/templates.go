@@ -72,7 +72,6 @@ if (!is_object($app)) {
 
 $runtime = $_SERVER['APP_RUNTIME'] ?? $_ENV['APP_RUNTIME'] ?? 'Symfony\\Component\\Runtime\\SymfonyRuntime';
 $runtime = new $runtime(($_SERVER['APP_RUNTIME_OPTIONS'] ?? $_ENV['APP_RUNTIME_OPTIONS'] ?? []) + [
-  'disable_dotenv' => true,
   'project_dir' => dirname(__DIR__, 1),
 ]);
 
