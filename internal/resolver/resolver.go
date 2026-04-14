@@ -12,6 +12,7 @@ import (
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/packagist"
 	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/platform"
 	"github.com/van-sprundel/vif/internal/version"
 )
 
@@ -337,6 +338,8 @@ type resolver struct {
 	solveProgress        func(string)
 	depth                int
 	providedVersionCache map[string]providedVersion
+	platformDetectOnce   sync.Once
+	detectedPlatform     *platform.Platform
 }
 
 type rootSatisfier struct {
@@ -959,25 +962,65 @@ func (r *resolver) platformRequirementSatisfied(name, raw string) bool {
 	}
 
 	override, ok := r.platformOverrides[name]
-	if !ok {
+	if ok {
+		if raw == "" || raw == "*" {
+			return true
+		}
+
+		constraint, err := version.ParseConstraint(raw)
+		if err != nil {
+			return true
+		}
+
+		v, err := version.Parse(override)
+		if err != nil {
+			return true
+		}
+
+		return constraint.Matches(v)
+	}
+
+	pf := r.localPlatform()
+	if pf == nil {
+		// Best effort: if local platform detection is unavailable, keep behavior permissive.
 		return true
 	}
 
-	if raw == "" || raw == "*" {
+	switch {
+	case name == "php":
+		if raw == "" || raw == "*" {
+			return true
+		}
+		constraint, err := version.ParseConstraint(raw)
+		if err != nil {
+			return true
+		}
+		v, err := version.Parse(pf.PHPVersion)
+		if err != nil {
+			return true
+		}
+		return constraint.Matches(v)
+	case strings.HasPrefix(name, "ext-"):
+		if raw == "" || raw == "*" {
+			return pf.Extensions[name]
+		}
+		// Composer does not reliably expose extension version numbers via CLI;
+		// treat any constrained ext requirement as presence-only, matching
+		// platform.VerifyPackages behavior.
+		return pf.Extensions[name]
+	default:
 		return true
 	}
+}
 
-	constraint, err := version.ParseConstraint(raw)
-	if err != nil {
-		return true
-	}
-
-	v, err := version.Parse(override)
-	if err != nil {
-		return true
-	}
-
-	return constraint.Matches(v)
+func (r *resolver) localPlatform() *platform.Platform {
+	r.platformDetectOnce.Do(func() {
+		pf, err := platform.Detect()
+		if err == nil {
+			r.detectedPlatform = pf
+		}
+	})
+	return r.detectedPlatform
 }
 
 func mergePendingRequirements(req requirement, rest []requirement) (requirement, []requirement, []version.Constraint) {

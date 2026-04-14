@@ -371,34 +371,53 @@ func (c Constraint) EffectiveStability(minimumStability Stability) Stability {
 	return minimumStability
 }
 
-// LowerBound returns the highest >= or > lower bound across all OR groups.
+// LowerBound returns a conservative global lower bound for the constraint.
+// For each OR-group, it computes that group's strongest lower bound (highest >/>=).
+// The global bound is then the weakest of those group bounds (lowest >/>=),
+// because matching any OR-group is sufficient.
+//
+// If any OR-group has no explicit lower bound, no global lower bound exists and
+// this returns false.
+//
 // Returns (Version, ">="|">", true) if found, or a zero value and false.
 func (c Constraint) LowerBound() (Version, string, bool) {
-	var best *bound
+	var global *bound
 	for _, g := range c.groups {
+		var groupBest *bound
 		for i := range g.bounds {
 			b := &g.bounds[i]
 			if b.op != OpGte && b.op != OpGt {
 				continue
 			}
-			if best == nil {
-				best = b
+			if groupBest == nil {
+				groupBest = b
 				continue
 			}
-			cmp := Compare(b.version, best.version)
-			if cmp > 0 || (cmp == 0 && b.op == OpGte && best.op == OpGt) {
-				best = b
+			cmp := Compare(b.version, groupBest.version)
+			if cmp > 0 || (cmp == 0 && b.op == OpGt && groupBest.op == OpGte) {
+				groupBest = b
 			}
 		}
+		if groupBest == nil {
+			return Version{}, "", false
+		}
+		if global == nil {
+			global = groupBest
+			continue
+		}
+		cmp := Compare(groupBest.version, global.version)
+		if cmp < 0 || (cmp == 0 && groupBest.op == OpGte && global.op == OpGt) {
+			global = groupBest
+		}
 	}
-	if best == nil {
+	if global == nil {
 		return Version{}, "", false
 	}
 	op := ">="
-	if best.op == OpGt {
+	if global.op == OpGt {
 		op = ">"
 	}
-	return best.version, op, true
+	return global.version, op, true
 }
 
 func (g constraintGroup) matches(v Version) bool {

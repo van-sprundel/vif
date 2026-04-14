@@ -269,3 +269,32 @@ func TestStabilityOverride(t *testing.T) {
 		})
 	}
 }
+
+func TestConstraintLowerBoundAcrossOrGroups(t *testing.T) {
+	c, err := ParseConstraint("^8.3 || ^8.5")
+	if err != nil {
+		t.Fatalf("ParseConstraint: %v", err)
+	}
+
+	v, op, ok := c.LowerBound()
+	if !ok {
+		t.Fatal("LowerBound() = no bound, want bound")
+	}
+	if op != ">=" {
+		t.Fatalf("LowerBound() op = %q, want >=", op)
+	}
+	if got := v.String(); got != "8.3.0-dev" {
+		t.Fatalf("LowerBound() version = %q, want 8.3.0-dev", got)
+	}
+}
+
+func TestConstraintLowerBoundMissingInAnyOrGroup(t *testing.T) {
+	c, err := ParseConstraint(">=8.2 || <8.0")
+	if err != nil {
+		t.Fatalf("ParseConstraint: %v", err)
+	}
+
+	if _, _, ok := c.LowerBound(); ok {
+		t.Fatal("LowerBound() = bound, want no bound when an OR-group has no lower bound")
+	}
+}

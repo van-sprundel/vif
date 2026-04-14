@@ -554,6 +554,79 @@ func TestResolveFiltersPlatformFromTransitive(t *testing.T) {
 	}
 }
 
+func TestResolveUsesLocalPHPWhenNoConfigPlatformOverride(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"php": ">=99.0"})
+	reg.add("acme/foo", "1.9.0", map[string]string{"php": ">=5.6"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/foo"].Version != "1.9.0" {
+		t.Fatalf("version = %q, want 1.9.0 (2.0.0 requires unsupported PHP >=99.0)", byName["acme/foo"].Version)
+	}
+}
+
+func TestResolveUsesLocalExtensionsWhenNoConfigPlatformOverride(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"ext-definitely-missing-vif-test": "*"})
+	reg.add("acme/foo", "1.9.0", nil)
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	byName := indexByName(resolved)
+	if byName["acme/foo"].Version != "1.9.0" {
+		t.Fatalf("version = %q, want 1.9.0 (2.0.0 requires a missing extension)", byName["acme/foo"].Version)
+	}
+}
+
+func TestResolveFailsWhenNoPlatformCompatibleVersionExists(t *testing.T) {
+	reg := newRegistry()
+	reg.add("acme/foo", "2.0.0", map[string]string{"php": ">=99.0"})
+	reg.add("acme/foo", "1.9.0", map[string]string{"php": ">=99.0"})
+
+	srv := reg.serve(t)
+	defer srv.Close()
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/foo": ">=1.0"},
+		MinimumStability: "stable",
+	}
+
+	_, err := resolver.Resolve(context.Background(), cj, packagist.NewClient(srv.URL))
+	if err == nil {
+		t.Fatal("expected error when all versions are platform-incompatible")
+	}
+	if !strings.Contains(err.Error(), "acme/foo") {
+		t.Fatalf("expected package name in error, got %v", err)
+	}
+}
+
 func TestResolveHonorsConfigPlatformPHPOverride(t *testing.T) {
 	reg := newRegistry()
 	reg.add("acme/foo", "2.0.0", map[string]string{"php": ">=8.5"})

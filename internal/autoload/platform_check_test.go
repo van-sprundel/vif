@@ -265,3 +265,31 @@ func TestPlatformCheckHighestPHPBound(t *testing.T) {
 		t.Errorf("should use highest PHP bound 8.1.0, got:\n%s", content)
 	}
 }
+
+func TestPlatformCheckPHPBoundFromOrConstraint(t *testing.T) {
+	vendorDir := testhelper.TempDir(t, "vendor")
+	packages := []pkg.Package{
+		{
+			Name:    "acme/foo",
+			Version: "1.0.0",
+			Require: map[string]string{"php": "^8.3 || ^8.5"},
+		},
+	}
+
+	if err := Generate(vendorDir, packages, "h9", false, nil, true, PlatformCheckFull, nil); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(vendorDir, "composer", "platform_check.php"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "PHP_VERSION_ID >= 80300") {
+		t.Errorf("should use conservative OR lower bound 8.3.0, got:\n%s", content)
+	}
+	if strings.Contains(content, "PHP_VERSION_ID >= 80500") {
+		t.Errorf("should not over-restrict to 8.5.0 for ^8.3 || ^8.5, got:\n%s", content)
+	}
+}
