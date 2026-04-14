@@ -68,8 +68,18 @@ type VersionEntry struct {
 	Provide           RelationMap     `json:"provide"`
 	Replace           RelationMap     `json:"replace"`
 	Conflict          RelationMap     `json:"conflict"`
+	Suggest           RelationMap     `json:"suggest"`
+	Extra             json.RawMessage `json:"extra"`
 	Autoload          json.RawMessage `json:"autoload"`
 	AutoloadDev       json.RawMessage `json:"autoload-dev"`
+	NotificationURL   string          `json:"notification-url"`
+	License           json.RawMessage `json:"license"`
+	Authors           json.RawMessage `json:"authors"`
+	Description       string          `json:"description"`
+	Homepage          string          `json:"homepage"`
+	Keywords          json.RawMessage `json:"keywords"`
+	Support           json.RawMessage `json:"support"`
+	Funding           json.RawMessage `json:"funding"`
 	Dist              DistEntry       `json:"dist"`
 	Source            DistEntry       `json:"source"`
 	Time              string          `json:"time"`

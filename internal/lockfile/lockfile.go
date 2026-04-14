@@ -39,20 +39,30 @@ type lockFileOut struct {
 
 // lockPkgEntry is a single package entry in composer.lock.
 type lockPkgEntry struct {
-	Name        string               `json:"name"`
-	Version     string               `json:"version"`
-	Dist        packagist.DistEntry  `json:"dist"`
-	Source      packagist.DistEntry  `json:"source,omitempty"`
-	Require     map[string]string    `json:"require,omitempty"`
-	RequireDev  map[string]string    `json:"require-dev,omitempty"`
-	Provide     map[string]string    `json:"provide,omitempty"`
-	Replace     map[string]string    `json:"replace,omitempty"`
-	Conflict    map[string]string    `json:"conflict,omitempty"`
-	Type        string               `json:"type,omitempty"`
-	Bin         packagist.StringList `json:"bin,omitempty"`
-	Autoload    json.RawMessage      `json:"autoload,omitempty"`
-	AutoloadDev json.RawMessage      `json:"autoload-dev,omitempty"`
-	Time        string               `json:"time,omitempty"`
+	Name            string               `json:"name"`
+	Version         string               `json:"version"`
+	Dist            packagist.DistEntry  `json:"dist"`
+	Source          packagist.DistEntry  `json:"source,omitempty"`
+	Require         map[string]string    `json:"require,omitempty"`
+	RequireDev      map[string]string    `json:"require-dev,omitempty"`
+	Provide         map[string]string    `json:"provide,omitempty"`
+	Replace         map[string]string    `json:"replace,omitempty"`
+	Conflict        map[string]string    `json:"conflict,omitempty"`
+	Suggest         map[string]string    `json:"suggest,omitempty"`
+	Type            string               `json:"type,omitempty"`
+	Extra           json.RawMessage      `json:"extra,omitempty"`
+	Bin             packagist.StringList `json:"bin,omitempty"`
+	Autoload        json.RawMessage      `json:"autoload,omitempty"`
+	AutoloadDev     json.RawMessage      `json:"autoload-dev,omitempty"`
+	NotificationURL string               `json:"notification-url,omitempty"`
+	License         json.RawMessage      `json:"license,omitempty"`
+	Authors         json.RawMessage      `json:"authors,omitempty"`
+	Description     string               `json:"description,omitempty"`
+	Homepage        string               `json:"homepage,omitempty"`
+	Keywords        json.RawMessage      `json:"keywords,omitempty"`
+	Support         json.RawMessage      `json:"support,omitempty"`
+	Funding         json.RawMessage      `json:"funding,omitempty"`
+	Time            string               `json:"time,omitempty"`
 }
 
 // IsFresh returns true if the lockfile's content-hash matches the computed
@@ -139,20 +149,30 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 		}
 
 		entry := lockPkgEntry{
-			Name:        rp.Name,
-			Version:     rp.Version,
-			Dist:        rp.Entry.Dist,
-			Source:      rp.Entry.Source,
-			Require:     rp.Entry.Require,
-			RequireDev:  rp.Entry.RequireDev,
-			Provide:     rp.Entry.Provide,
-			Replace:     rp.Entry.Replace,
-			Conflict:    rp.Entry.Conflict,
-			Type:        rp.Entry.Type,
-			Bin:         rp.Entry.Bin,
-			Autoload:    rp.Entry.Autoload,
-			AutoloadDev: rp.Entry.AutoloadDev,
-			Time:        rp.Entry.Time,
+			Name:            rp.Name,
+			Version:         rp.Version,
+			Dist:            rp.Entry.Dist,
+			Source:          rp.Entry.Source,
+			Require:         rp.Entry.Require,
+			RequireDev:      rp.Entry.RequireDev,
+			Provide:         rp.Entry.Provide,
+			Replace:         rp.Entry.Replace,
+			Conflict:        rp.Entry.Conflict,
+			Suggest:         rp.Entry.Suggest,
+			Type:            rp.Entry.Type,
+			Extra:           rp.Entry.Extra,
+			Bin:             rp.Entry.Bin,
+			Autoload:        rp.Entry.Autoload,
+			AutoloadDev:     rp.Entry.AutoloadDev,
+			NotificationURL: rp.Entry.NotificationURL,
+			License:         rp.Entry.License,
+			Authors:         rp.Entry.Authors,
+			Description:     rp.Entry.Description,
+			Homepage:        rp.Entry.Homepage,
+			Keywords:        rp.Entry.Keywords,
+			Support:         rp.Entry.Support,
+			Funding:         rp.Entry.Funding,
+			Time:            rp.Entry.Time,
 		}
 		raw, err := marshalJSON(entry)
 		if err != nil {

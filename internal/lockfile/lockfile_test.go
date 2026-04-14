@@ -540,6 +540,84 @@ func TestGeneratePreservesExistingRawPackageAndPluginAPIVersion(t *testing.T) {
 	}
 }
 
+func TestGenerateWritesComposerPluginExtraClassForNewVersion(t *testing.T) {
+	dir := testhelper.TempDir(t, "lockfile")
+	path := filepath.Join(dir, "composer.lock")
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"symfony/flex": "^2.0"},
+		MinimumStability: "stable",
+		PreferStable:     true,
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "symfony/flex",
+			Version: "v2.8.2",
+			Entry: packagist.VersionEntry{
+				Name:    "symfony/flex",
+				Version: "v2.8.2",
+				Type:    "composer-plugin",
+				Require: map[string]string{
+					"php":                 ">=8.1",
+					"composer-plugin-api": "^2.1",
+				},
+				Extra: json.RawMessage(`{"class":"Symfony\\Flex\\Flex"}`),
+				Dist: packagist.DistEntry{
+					Type:      "zip",
+					URL:       "https://example.com/symfony/flex.zip",
+					Reference: "abc123",
+				},
+				Source: packagist.DistEntry{
+					Type:      "git",
+					URL:       "https://example.com/symfony/flex.git",
+					Reference: "abc123",
+				},
+				Time: "2026-04-01T12:00:00+00:00",
+			},
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var out struct {
+		Packages []struct {
+			Name  string          `json:"name"`
+			Type  string          `json:"type"`
+			Extra json.RawMessage `json:"extra"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(out.Packages) != 1 {
+		t.Fatalf("len(packages) = %d, want 1", len(out.Packages))
+	}
+	if out.Packages[0].Name != "symfony/flex" {
+		t.Fatalf("name = %q, want symfony/flex", out.Packages[0].Name)
+	}
+	if out.Packages[0].Type != "composer-plugin" {
+		t.Fatalf("type = %q, want composer-plugin", out.Packages[0].Type)
+	}
+
+	var extra map[string]string
+	if err := json.Unmarshal(out.Packages[0].Extra, &extra); err != nil {
+		t.Fatalf("unmarshal extra: %v", err)
+	}
+	if extra["class"] != `Symfony\Flex\Flex` {
+		t.Fatalf(`extra.class = %q, want "Symfony\\Flex\\Flex"`, extra["class"])
+	}
+}
+
 func TestGenerateWritesPlatformOverridesFromComposerConfig(t *testing.T) {
 	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")
