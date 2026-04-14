@@ -934,10 +934,6 @@ func TestCompatUpdateLockfile(t *testing.T) {
 	}
 
 	fixtures := discoverCompatFixtures(t)
-	cacheDir, err := getSharedCache(t)
-	if err != nil {
-		t.Fatalf("shared cache: %v", err)
-	}
 	if _, err := getCompatBinary(t); err != nil {
 		t.Fatalf("compat binary: %v", err)
 	}
@@ -959,6 +955,9 @@ func TestCompatUpdateLockfile(t *testing.T) {
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.json"), filepath.Join(vifDir, "composer.json"))
 			copyCompatFile(t, filepath.Join(fixtureDir, "composer.lock"), filepath.Join(vifDir, "composer.lock"))
 
+			// Use a fresh cache per fixture update run to avoid stale metadata
+			// influencing lockfile parity checks against Composer.
+			cacheDir := compatTempDir(t, "vif-update-cache-*")
 			if err := runVifUpdate(t, vifDir, cacheDir); err != nil {
 				if isKnownCompatUpdateSkip(err) {
 					t.Skipf("vif update unsupported for this fixture: %v", err)
