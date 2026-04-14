@@ -44,6 +44,7 @@ type composerConfig struct {
 	PrependAutoloader  *bool       `json:"prepend-autoloader,omitempty"`
 	PlatformCheck      *boolOrStr  `json:"platform-check,omitempty"`
 	Platform           platformMap `json:"platform,omitempty"`
+	BumpAfterUpdate    *boolOrStr  `json:"bump-after-update,omitempty"`
 }
 
 type platformMap map[string]platformValue
@@ -293,6 +294,28 @@ func (cj *ComposerJSON) DisabledPlatformPackages() map[string]bool {
 		out[name] = true
 	}
 	return out
+}
+
+// BumpAfterUpdateMode returns the configured bump-after-update mode:
+// "all", "dev", "no-dev", or empty string when disabled/unsupported.
+func (cj *ComposerJSON) BumpAfterUpdateMode() string {
+	if cj.Config.BumpAfterUpdate == nil {
+		return ""
+	}
+	if cj.Config.BumpAfterUpdate.IsStr {
+		switch strings.ToLower(strings.TrimSpace(cj.Config.BumpAfterUpdate.Str)) {
+		case "dev":
+			return "dev"
+		case "no-dev":
+			return "no-dev"
+		default:
+			return ""
+		}
+	}
+	if cj.Config.BumpAfterUpdate.Bool {
+		return "all"
+	}
+	return ""
 }
 
 func filterPlatform(deps map[string]string) map[string]string {

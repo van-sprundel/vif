@@ -250,6 +250,16 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 			added, updated, removed, unchanged)
 	}
 
+	composerWriteDuration := time.Duration(0)
+	if changed := applyBumpAfterUpdate(cj, resolved, noDev); changed {
+		composerWriteStart := time.Now()
+		if err := cj.Write("composer.json"); err != nil {
+			return fmt.Errorf("write composer.json: %w", err)
+		}
+		composerWriteDuration = time.Since(composerWriteStart)
+		fmt.Fprintln(w, "Updated composer.json")
+	}
+
 	installProfile, err := installFromResolved(ctx, w, resolved, cj, verbose, noAutoloader, c, profile)
 	if err != nil {
 		return err
@@ -291,6 +301,7 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 				"metadata":   metadataClientDuration.Milliseconds(),
 				"restrict":   restrictionsDuration.Milliseconds(),
 				"resolve":    resolveDuration.Milliseconds(),
+				"write_json": composerWriteDuration.Milliseconds(),
 				"write_lock": lockfileWriteDuration.Milliseconds(),
 			},
 		}
@@ -310,6 +321,7 @@ func runUpdate(ctx context.Context, packages []string, verbose bool, noDev bool,
 			{Name: "init metadata client", Duration: metadataClientDuration},
 			{Name: "resolve restrictions", Duration: restrictionsDuration},
 			{Name: "resolve", Duration: resolveDuration},
+			{Name: "write composer.json", Duration: composerWriteDuration},
 			{Name: "write lockfile", Duration: lockfileWriteDuration},
 		}
 		var slowPackages []ui.ProfilePackage
@@ -356,6 +368,135 @@ func profileDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+func applyBumpAfterUpdate(cj *composer.ComposerJSON, resolved []resolver.ResolvedPackage, noDev bool) bool {
+	mode := cj.BumpAfterUpdateMode()
+	if mode == "" {
+		return false
+	}
+
+	resolvedByName := make(map[string]string, len(resolved))
+	for _, rp := range resolved {
+		resolvedByName[rp.Name] = rp.Version
+	}
+
+	changed := false
+	if mode == "all" || mode == "no-dev" {
+		for name, current := range cj.Require {
+			resolvedVersion, ok := resolvedByName[name]
+			if !ok {
+				continue
+			}
+			bumped, ok := bumpConstraint(current, resolvedVersion)
+			if !ok || bumped == current {
+				continue
+			}
+			cj.AddRequire(name, bumped)
+			changed = true
+		}
+	}
+
+	if !noDev && (mode == "all" || mode == "dev") {
+		for name, current := range cj.RequireDev {
+			resolvedVersion, ok := resolvedByName[name]
+			if !ok {
+				continue
+			}
+			bumped, ok := bumpConstraint(current, resolvedVersion)
+			if !ok || bumped == current {
+				continue
+			}
+			cj.AddRequireDev(name, bumped)
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func bumpConstraint(current, resolvedVersion string) (string, bool) {
+	version := normalizeBumpVersion(resolvedVersion)
+	if version == "" {
+		return "", false
+	}
+
+	base, suffix := splitStabilitySuffix(current)
+	base = strings.TrimSpace(base)
+	if base == "" || strings.Contains(base, "||") || strings.Contains(base, ",") {
+		return "", false
+	}
+
+	switch {
+	case strings.HasPrefix(base, "^"):
+		if !isSimpleVersion(strings.TrimSpace(base[1:])) {
+			return "", false
+		}
+		return "^" + version + suffix, true
+	case strings.HasPrefix(base, "~"):
+		if !isSimpleVersion(strings.TrimSpace(base[1:])) {
+			return "", false
+		}
+		return "~" + version + suffix, true
+	case strings.HasPrefix(base, ">="):
+		if !isSimpleVersion(strings.TrimSpace(base[2:])) {
+			return "", false
+		}
+		return ">=" + version + suffix, true
+	case isSimpleVersion(base):
+		prefix := ""
+		if strings.HasPrefix(base, "v") || strings.HasPrefix(base, "V") {
+			prefix = "v"
+		}
+		return prefix + version + suffix, true
+	default:
+		return "", false
+	}
+}
+
+func splitStabilitySuffix(constraint string) (string, string) {
+	i := strings.Index(constraint, "@")
+	if i == -1 {
+		return constraint, ""
+	}
+	return constraint[:i], constraint[i:]
+}
+
+func normalizeBumpVersion(version string) string {
+	v := strings.TrimSpace(version)
+	if len(v) >= 2 && (v[0] == 'v' || v[0] == 'V') && isDigit(v[1]) {
+		v = v[1:]
+	}
+	if !isSimpleVersion(v) {
+		return ""
+	}
+	return v
+}
+
+func isSimpleVersion(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	dotCount := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '.' {
+			dotCount++
+			if dotCount > 3 {
+				return false
+			}
+			continue
+		}
+		if !isDigit(ch) {
+			return false
+		}
+	}
+	return true
+}
+
+func isDigit(ch byte) bool {
+	return ch >= '0' && ch <= '9'
 }
 
 func formatLookupLog(name string, d time.Duration, err error) string {

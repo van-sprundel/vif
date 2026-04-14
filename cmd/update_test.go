@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -156,6 +158,96 @@ func TestFormatRepositoryLookupLog(t *testing.T) {
 	if got != want {
 		t.Fatalf("formatRepositoryLookupLog miss = %q, want %q", got, want)
 	}
+}
+
+func TestApplyBumpAfterUpdate(t *testing.T) {
+	cj := parseComposerJSONForUpdateTest(t, `{
+		"name": "test/project",
+		"require": {"symfony/flex": "^2.8.0"},
+		"require-dev": {"phpunit/phpunit": "^13.1.1"},
+		"config": {"bump-after-update": true}
+	}`)
+
+	resolved := []resolver.ResolvedPackage{
+		{Name: "symfony/flex", Version: "v2.8.2"},
+		{Name: "phpunit/phpunit", Version: "13.1.3"},
+	}
+
+	if changed := applyBumpAfterUpdate(cj, resolved, false); !changed {
+		t.Fatalf("applyBumpAfterUpdate() = false, want true")
+	}
+
+	if got, want := cj.Require["symfony/flex"], "^2.8.2"; got != want {
+		t.Fatalf("require symfony/flex = %q, want %q", got, want)
+	}
+	if got, want := cj.RequireDev["phpunit/phpunit"], "^13.1.3"; got != want {
+		t.Fatalf("require-dev phpunit/phpunit = %q, want %q", got, want)
+	}
+}
+
+func TestApplyBumpAfterUpdateNoDevMode(t *testing.T) {
+	cj := parseComposerJSONForUpdateTest(t, `{
+		"name": "test/project",
+		"require": {"symfony/flex": "^2.8.0"},
+		"require-dev": {"phpunit/phpunit": "^13.1.1"},
+		"config": {"bump-after-update": "no-dev"}
+	}`)
+
+	resolved := []resolver.ResolvedPackage{
+		{Name: "symfony/flex", Version: "v2.8.2"},
+		{Name: "phpunit/phpunit", Version: "13.1.3"},
+	}
+
+	if changed := applyBumpAfterUpdate(cj, resolved, false); !changed {
+		t.Fatalf("applyBumpAfterUpdate() = false, want true")
+	}
+
+	if got, want := cj.Require["symfony/flex"], "^2.8.2"; got != want {
+		t.Fatalf("require symfony/flex = %q, want %q", got, want)
+	}
+	if got, want := cj.RequireDev["phpunit/phpunit"], "^13.1.1"; got != want {
+		t.Fatalf("require-dev phpunit/phpunit = %q, want %q", got, want)
+	}
+}
+
+func TestBumpConstraint(t *testing.T) {
+	tests := []struct {
+		constraint string
+		version    string
+		want       string
+		ok         bool
+	}{
+		{constraint: "^3.94.2", version: "v3.95.1", want: "^3.95.1", ok: true},
+		{constraint: "~2.1.46", version: "2.1.47", want: "~2.1.47", ok: true},
+		{constraint: "13.1.1", version: "13.1.3", want: "13.1.3", ok: true},
+		{constraint: "^13.1.1@dev", version: "13.1.3", want: "^13.1.3@dev", ok: true},
+		{constraint: "^13.1 || ^14.0", version: "13.1.3", ok: false},
+		{constraint: "dev-main", version: "13.1.3", ok: false},
+	}
+
+	for _, tt := range tests {
+		got, ok := bumpConstraint(tt.constraint, tt.version)
+		if ok != tt.ok {
+			t.Fatalf("bumpConstraint(%q, %q) ok=%v, want %v", tt.constraint, tt.version, ok, tt.ok)
+		}
+		if ok && got != tt.want {
+			t.Fatalf("bumpConstraint(%q, %q) = %q, want %q", tt.constraint, tt.version, got, tt.want)
+		}
+	}
+}
+
+func parseComposerJSONForUpdateTest(t *testing.T, content string) *composer.ComposerJSON {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "composer.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cj, err := composer.Parse(path)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return cj
 }
 
 func TestResolvedToPackagePreservesMetadata(t *testing.T) {

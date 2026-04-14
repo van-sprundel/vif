@@ -478,6 +478,41 @@ func TestParseAutoScripts(t *testing.T) {
 	}
 }
 
+func TestBumpAfterUpdateMode(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  string
+		want string
+	}{
+		{name: "bool true", cfg: `true`, want: "all"},
+		{name: "bool false", cfg: `false`, want: ""},
+		{name: "dev", cfg: `"dev"`, want: "dev"},
+		{name: "no-dev", cfg: `"no-dev"`, want: "no-dev"},
+		{name: "unknown string", cfg: `"weird"`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testhelper.TempDir(t, "composer")
+			writeJSON(t, dir, `{
+				"name": "test/bump",
+				"config": {
+					"bump-after-update": `+tt.cfg+`
+				}
+			}`)
+
+			cj, err := composer.Parse(filepath.Join(dir, "composer.json"))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+
+			if got := cj.BumpAfterUpdateMode(); got != tt.want {
+				t.Fatalf("BumpAfterUpdateMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func writeJSON(t *testing.T, dir, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "composer.json"), []byte(content), 0o644); err != nil {
