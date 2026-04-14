@@ -37,33 +37,9 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 
 	var prodPkgs, devPkgs []pkg.Package
 	for _, rp := range resolved {
-		p := pkg.Package{
-			Name:    rp.Name,
-			Version: rp.Version,
-			Type:    rp.Entry.Type,
-			Bin:     rp.Entry.Bin,
-			Dist: pkg.Dist{
-				Type:      rp.Entry.Dist.Type,
-				URL:       rp.Entry.Dist.URL,
-				Reference: rp.Entry.Dist.Reference,
-				Shasum:    rp.Entry.Dist.Shasum,
-			},
-			Source: pkg.Dist{
-				Type:      rp.Entry.Source.Type,
-				URL:       rp.Entry.Source.URL,
-				Reference: rp.Entry.Source.Reference,
-				Shasum:    rp.Entry.Source.Shasum,
-			},
-		}
-		if len(rp.Entry.Autoload) > 0 {
-			if err := json.Unmarshal(rp.Entry.Autoload, &p.Autoload); err != nil {
-				return nil, fmt.Errorf("unmarshal autoload for %s: %w", rp.Name, err)
-			}
-		}
-		if len(rp.Entry.AutoloadDev) > 0 {
-			if err := json.Unmarshal(rp.Entry.AutoloadDev, &p.AutoloadDev); err != nil {
-				return nil, fmt.Errorf("unmarshal autoload-dev for %s: %w", rp.Name, err)
-			}
+		p, err := resolvedToPackage(rp)
+		if err != nil {
+			return nil, err
 		}
 		if rp.Dev {
 			devPkgs = append(devPkgs, p)
@@ -219,4 +195,43 @@ func installFromResolved(ctx context.Context, w io.Writer, resolved []resolver.R
 	}
 
 	return prof, nil
+}
+
+func resolvedToPackage(rp resolver.ResolvedPackage) (pkg.Package, error) {
+	p := pkg.Package{
+		Name:              rp.Name,
+		Version:           rp.Version,
+		VersionNormalized: rp.Entry.VersionNormalized,
+		Type:              rp.Entry.Type,
+		Bin:               rp.Entry.Bin,
+		Require:           rp.Entry.Require,
+		RequireDev:        rp.Entry.RequireDev,
+		Provide:           rp.Entry.Provide,
+		Replace:           rp.Entry.Replace,
+		Conflict:          rp.Entry.Conflict,
+		Time:              rp.Entry.Time,
+		Dist: pkg.Dist{
+			Type:      rp.Entry.Dist.Type,
+			URL:       rp.Entry.Dist.URL,
+			Reference: rp.Entry.Dist.Reference,
+			Shasum:    rp.Entry.Dist.Shasum,
+		},
+		Source: pkg.Dist{
+			Type:      rp.Entry.Source.Type,
+			URL:       rp.Entry.Source.URL,
+			Reference: rp.Entry.Source.Reference,
+			Shasum:    rp.Entry.Source.Shasum,
+		},
+	}
+	if len(rp.Entry.Autoload) > 0 {
+		if err := json.Unmarshal(rp.Entry.Autoload, &p.Autoload); err != nil {
+			return pkg.Package{}, fmt.Errorf("unmarshal autoload for %s: %w", rp.Name, err)
+		}
+	}
+	if len(rp.Entry.AutoloadDev) > 0 {
+		if err := json.Unmarshal(rp.Entry.AutoloadDev, &p.AutoloadDev); err != nil {
+			return pkg.Package{}, fmt.Errorf("unmarshal autoload-dev for %s: %w", rp.Name, err)
+		}
+	}
+	return p, nil
 }

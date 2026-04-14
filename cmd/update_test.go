@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/van-sprundel/vif/internal/composer"
 	"github.com/van-sprundel/vif/internal/packagist"
+	"github.com/van-sprundel/vif/internal/pkg"
+	"github.com/van-sprundel/vif/internal/resolver"
 )
 
 type staticFetcher map[string][]packagist.VersionEntry
@@ -153,4 +156,107 @@ func TestFormatRepositoryLookupLog(t *testing.T) {
 	if got != want {
 		t.Fatalf("formatRepositoryLookupLog miss = %q, want %q", got, want)
 	}
+}
+
+func TestResolvedToPackagePreservesMetadata(t *testing.T) {
+	rp := resolver.ResolvedPackage{
+		Name:    "symfony/flex",
+		Version: "v2.8.2",
+		Entry: packagist.VersionEntry{
+			Name:              "symfony/flex",
+			Version:           "v2.8.2",
+			VersionNormalized: "2.8.2.0",
+			Type:              "composer-plugin",
+			Require: map[string]string{
+				"php":                 ">=8.0",
+				"composer-plugin-api": "^2.1",
+			},
+			RequireDev: map[string]string{
+				"symfony/process": "^6.4|^7.0",
+			},
+			Provide: map[string]string{
+				"acme/virtual": "self.version",
+			},
+			Replace: map[string]string{
+				"acme/replaced": "*",
+			},
+			Conflict: map[string]string{
+				"acme/conflict": "<1.0",
+			},
+			Time: "2026-01-02T03:04:05+00:00",
+			Dist: packagist.DistEntry{
+				Type:      "zip",
+				URL:       "https://example.com/symfony-flex.zip",
+				Reference: "abc123",
+				Shasum:    "deadbeef",
+			},
+			Source: packagist.DistEntry{
+				Type:      "git",
+				URL:       "https://example.com/symfony-flex.git",
+				Reference: "abc123",
+				Shasum:    "deadbeef",
+			},
+			Autoload: mustRawJSON(t, map[string]any{
+				"psr-4": map[string]any{
+					"Symfony\\Flex\\": "src/",
+				},
+			}),
+			AutoloadDev: mustRawJSON(t, map[string]any{
+				"files": []string{"tests/bootstrap.php"},
+			}),
+		},
+	}
+
+	got, err := resolvedToPackage(rp)
+	if err != nil {
+		t.Fatalf("resolvedToPackage: %v", err)
+	}
+
+	if got.VersionNormalized != "2.8.2.0" {
+		t.Fatalf("VersionNormalized = %q, want 2.8.2.0", got.VersionNormalized)
+	}
+	if got.Type != "composer-plugin" {
+		t.Fatalf("Type = %q, want composer-plugin", got.Type)
+	}
+	if got.Require["composer-plugin-api"] != "^2.1" {
+		t.Fatalf("Require[composer-plugin-api] = %q, want ^2.1", got.Require["composer-plugin-api"])
+	}
+	if got.RequireDev["symfony/process"] != "^6.4|^7.0" {
+		t.Fatalf("RequireDev[symfony/process] = %q, want ^6.4|^7.0", got.RequireDev["symfony/process"])
+	}
+	if got.Provide["acme/virtual"] != "self.version" {
+		t.Fatalf("Provide[acme/virtual] = %q, want self.version", got.Provide["acme/virtual"])
+	}
+	if got.Replace["acme/replaced"] != "*" {
+		t.Fatalf("Replace[acme/replaced] = %q, want *", got.Replace["acme/replaced"])
+	}
+	if got.Conflict["acme/conflict"] != "<1.0" {
+		t.Fatalf("Conflict[acme/conflict] = %q, want <1.0", got.Conflict["acme/conflict"])
+	}
+	if got.Time != "2026-01-02T03:04:05+00:00" {
+		t.Fatalf("Time = %q, want 2026-01-02T03:04:05+00:00", got.Time)
+	}
+	if got.Autoload.PSR4["Symfony\\Flex\\"][0] != "src/" {
+		t.Fatalf("Autoload PSR-4 = %v, want Symfony\\\\Flex\\\\ => src/", got.Autoload.PSR4)
+	}
+	if got.AutoloadDev.Files[0] != "tests/bootstrap.php" {
+		t.Fatalf("AutoloadDev.Files = %v, want [tests/bootstrap.php]", got.AutoloadDev.Files)
+	}
+	if got.Dist != (pkg.Dist{
+		Type:      "zip",
+		URL:       "https://example.com/symfony-flex.zip",
+		Reference: "abc123",
+		Shasum:    "deadbeef",
+	}) {
+		t.Fatalf("Dist = %+v", got.Dist)
+	}
+}
+
+func mustRawJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return data
 }
