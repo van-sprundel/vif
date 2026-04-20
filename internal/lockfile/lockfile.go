@@ -174,7 +174,8 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 			Funding:         rp.Entry.Funding,
 			Time:            rp.Entry.Time,
 		}
-		raw, err := marshalJSON(entry)
+		previous, _ := existing.lookupPackageByName(rp.Name, rp.Dev)
+		raw, err := marshalLockPackageEntry(entry, previous)
 		if err != nil {
 			return fmt.Errorf("lockfile: marshal package %s@%s: %w", rp.Name, rp.Version, err)
 		}
@@ -232,6 +233,8 @@ func Generate(path string, resolved []resolver.ResolvedPackage, cj *composer.Com
 type existingLockfile struct {
 	packageByKey     map[string]json.RawMessage
 	packageDevByKey  map[string]json.RawMessage
+	packageByName    map[string]json.RawMessage
+	packageDevByName map[string]json.RawMessage
 	pluginAPIVersion string
 }
 
@@ -256,6 +259,8 @@ func loadExistingLockfile(path string) (existingLockfile, error) {
 	return existingLockfile{
 		packageByKey:     indexRawPackages(root.Packages),
 		packageDevByKey:  indexRawPackages(root.PackagesDev),
+		packageByName:    indexRawPackagesByName(root.Packages),
+		packageDevByName: indexRawPackagesByName(root.PackagesDev),
 		pluginAPIVersion: root.PluginAPIVersion,
 	}, nil
 }
@@ -278,6 +283,23 @@ func indexRawPackages(rawPackages []json.RawMessage) map[string]json.RawMessage 
 	return index
 }
 
+func indexRawPackagesByName(rawPackages []json.RawMessage) map[string]json.RawMessage {
+	index := make(map[string]json.RawMessage, len(rawPackages))
+	for _, raw := range rawPackages {
+		var entry struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		if entry.Name == "" {
+			continue
+		}
+		index[entry.Name] = raw
+	}
+	return index
+}
+
 func (e existingLockfile) lookupPackage(name, version string, dev bool) (json.RawMessage, bool) {
 	key := name + "@" + version
 	if dev {
@@ -285,6 +307,21 @@ func (e existingLockfile) lookupPackage(name, version string, dev bool) (json.Ra
 		return raw, ok
 	}
 	raw, ok := e.packageByKey[key]
+	return raw, ok
+}
+
+func (e existingLockfile) lookupPackageByName(name string, dev bool) (json.RawMessage, bool) {
+	if dev {
+		if raw, ok := e.packageDevByName[name]; ok {
+			return raw, true
+		}
+		raw, ok := e.packageByName[name]
+		return raw, ok
+	}
+	if raw, ok := e.packageByName[name]; ok {
+		return raw, true
+	}
+	raw, ok := e.packageDevByName[name]
 	return raw, ok
 }
 
@@ -339,4 +376,116 @@ func marshalJSONIndent(v interface{}, prefix, indent string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func marshalLockPackageEntry(entry lockPkgEntry, previous json.RawMessage) (json.RawMessage, error) {
+	data, err := marshalJSON(entry)
+	if err != nil {
+		return nil, err
+	}
+	if len(previous) == 0 {
+		return data, nil
+	}
+
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return data, nil
+	}
+	if _, ok := values["notification-url"]; !ok {
+		if raw, ok := rawObjectField(previous, "notification-url"); ok {
+			values["notification-url"] = raw
+		}
+	}
+
+	order := rawObjectKeyOrder(previous)
+	if len(order) == 0 {
+		return data, nil
+	}
+	return marshalOrderedRawObject(values, order), nil
+}
+
+func rawObjectField(raw json.RawMessage, key string) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, false
+	}
+	value, ok := obj[key]
+	if !ok {
+		return nil, false
+	}
+	return value, true
+}
+
+func rawObjectKeyOrder(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return nil
+	}
+
+	var order []string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil
+		}
+		order = append(order, key)
+
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return nil
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil
+	}
+	return order
+}
+
+func marshalOrderedRawObject(values map[string]json.RawMessage, existing []string) json.RawMessage {
+	seen := make(map[string]bool, len(values))
+	keys := make([]string, 0, len(values))
+	for _, key := range existing {
+		if _, ok := values[key]; !ok || seen[key] {
+			continue
+		}
+		keys = append(keys, key)
+		seen[key] = true
+	}
+
+	var extra []string
+	for key := range values {
+		if seen[key] {
+			continue
+		}
+		extra = append(extra, key)
+	}
+	sort.Strings(extra)
+	keys = append(keys, extra...)
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, key := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		keyJSON, _ := marshalJSON(key)
+		buf.Write(keyJSON)
+		buf.WriteByte(':')
+		buf.Write(values[key])
+	}
+	buf.WriteByte('}')
+	return json.RawMessage(buf.Bytes())
 }

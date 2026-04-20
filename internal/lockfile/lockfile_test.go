@@ -618,6 +618,108 @@ func TestGenerateWritesComposerPluginExtraClassForNewVersion(t *testing.T) {
 	}
 }
 
+func TestGeneratePreservesPreviousPackageOrderAndNotificationURLAcrossVersionBumps(t *testing.T) {
+	dir := testhelper.TempDir(t, "lockfile")
+	path := filepath.Join(dir, "composer.lock")
+
+	existing := `{
+    "_readme": [],
+    "content-hash": "old",
+    "packages": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "13.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://example.com/phpunit.git",
+                "reference": "old-ref"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://example.com/phpunit.zip",
+                "reference": "old-ref",
+                "shasum": ""
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "require": {
+                "php": ">=8.4.1"
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {}
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		RequireDev:       map[string]string{"phpunit/phpunit": "^13.1.7"},
+		MinimumStability: "stable",
+		PreferStable:     true,
+	}
+
+	resolved := []resolver.ResolvedPackage{
+		{
+			Name:    "phpunit/phpunit",
+			Version: "13.1.7",
+			Entry: packagist.VersionEntry{
+				Name:    "phpunit/phpunit",
+				Version: "13.1.7",
+				Type:    "library",
+				Require: map[string]string{"php": ">=8.4.1"},
+				Source: packagist.DistEntry{
+					Type:      "git",
+					URL:       "https://example.com/phpunit.git",
+					Reference: "new-ref",
+				},
+				Dist: packagist.DistEntry{
+					Type:      "zip",
+					URL:       "https://example.com/phpunit.zip",
+					Reference: "new-ref",
+					Shasum:    "",
+				},
+			},
+			Dev: true,
+		},
+	}
+
+	if err := lockfile.Generate(path, resolved, cj); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(data)
+
+	if !strings.Contains(got, `"notification-url": "https://packagist.org/downloads/"`) {
+		t.Fatalf("expected notification-url to be preserved across version bump:\n%s", got)
+	}
+	if !strings.Contains(got, `"version": "13.1.7"`) {
+		t.Fatalf("expected updated version in lockfile:\n%s", got)
+	}
+
+	sourceIdx := strings.Index(got, `"source"`)
+	distIdx := strings.Index(got, `"dist"`)
+	notificationIdx := strings.Index(got, `"notification-url"`)
+	requireIdx := strings.Index(got, `"require"`)
+	if sourceIdx == -1 || distIdx == -1 || notificationIdx == -1 || requireIdx == -1 {
+		t.Fatalf("expected package keys missing from lockfile:\n%s", got)
+	}
+	if !(sourceIdx < distIdx && distIdx < notificationIdx && notificationIdx < requireIdx) {
+		t.Fatalf("expected previous package key order to be preserved, got:\n%s", got)
+	}
+}
+
 func TestGenerateWritesPlatformOverridesFromComposerConfig(t *testing.T) {
 	dir := testhelper.TempDir(t, "lockfile")
 	path := filepath.Join(dir, "composer.lock")

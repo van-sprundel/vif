@@ -3,6 +3,7 @@ package composer_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/composer"
@@ -510,6 +511,182 @@ func TestBumpAfterUpdateMode(t *testing.T) {
 				t.Fatalf("BumpAfterUpdateMode() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWritePreservesTopLevelAndRequireOrder(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	path := filepath.Join(dir, "composer.json")
+
+	original := `{
+    "license": "proprietary",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://satis.example.test"
+        }
+    ],
+    "require": {
+        "php": ">=8.4",
+        "ext-ctype": "*",
+        "twig/twig": "^3.24.0"
+    },
+    "config": {
+        "platform": {
+            "php": "8.4.1"
+        },
+        "allow-plugins": {
+            "symfony/flex": true
+        },
+        "bump-after-update": true,
+        "sort-packages": true,
+        "audit": {
+            "block-insecure": false
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^13.1.1",
+        "phpstan/phpstan": "^2.1.46"
+    }
+}`
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj, err := composer.Parse(path)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	cj.AddRequire("twig/twig", "^3.25.0")
+	cj.AddRequireDev("phpunit/phpunit", "^13.1.7")
+
+	if err := cj.Write(path); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(data)
+
+	topLevel := []string{
+		`"license"`,
+		`"minimum-stability"`,
+		`"prefer-stable"`,
+		`"repositories"`,
+		`"require"`,
+		`"config"`,
+		`"require-dev"`,
+	}
+	last := -1
+	for _, key := range topLevel {
+		idx := strings.Index(got, key)
+		if idx == -1 {
+			t.Fatalf("missing top-level key %s in output:\n%s", key, got)
+		}
+		if idx <= last {
+			t.Fatalf("top-level key %s moved out of order in output:\n%s", key, got)
+		}
+		last = idx
+	}
+
+	requireSectionStart := strings.Index(got, `"require": {`)
+	requireSectionEnd := strings.Index(got[requireSectionStart:], "\n    },")
+	requireSection := got[requireSectionStart : requireSectionStart+requireSectionEnd]
+	requireKeys := []string{
+		`"php"`,
+		`"ext-ctype"`,
+		`"twig/twig"`,
+	}
+	last = -1
+	for _, key := range requireKeys {
+		idx := strings.Index(requireSection, key)
+		if idx == -1 {
+			t.Fatalf("missing require key %s in output:\n%s", key, requireSection)
+		}
+		if idx <= last {
+			t.Fatalf("require key %s moved out of order in output:\n%s", key, requireSection)
+		}
+		last = idx
+	}
+
+	if !strings.Contains(got, `"twig/twig": "^3.25.0"`) {
+		t.Fatalf("updated require constraint missing from output:\n%s", got)
+	}
+	if !strings.Contains(got, `"phpunit/phpunit": "^13.1.7"`) {
+		t.Fatalf("updated require-dev constraint missing from output:\n%s", got)
+	}
+
+	configOrder := []string{
+		`"platform"`,
+		`"allow-plugins"`,
+		`"bump-after-update"`,
+		`"sort-packages"`,
+		`"audit"`,
+	}
+	configSectionStart := strings.Index(got, `"config": {`)
+	configSectionEnd := strings.Index(got[configSectionStart:], "\n    },")
+	configSection := got[configSectionStart : configSectionStart+configSectionEnd]
+	last = -1
+	for _, key := range configOrder {
+		idx := strings.Index(configSection, key)
+		if idx == -1 {
+			t.Fatalf("missing config key %s in output:\n%s", key, configSection)
+		}
+		if idx <= last {
+			t.Fatalf("config key %s moved out of order in output:\n%s", key, configSection)
+		}
+		last = idx
+	}
+}
+
+func TestWriteAppendsNewRequireKeyWithoutResortingExistingEntries(t *testing.T) {
+	dir := testhelper.TempDir(t, "composer")
+	path := filepath.Join(dir, "composer.json")
+	if err := os.WriteFile(path, []byte(`{
+    "require": {
+        "php": ">=8.4",
+        "twig/twig": "^3.24.0"
+    }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cj, err := composer.Parse(path)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	cj.AddRequire("symfony/console", "^8.0")
+
+	if err := cj.Write(path); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(data)
+	requireKeys := []string{
+		`"php"`,
+		`"twig/twig"`,
+		`"symfony/console"`,
+	}
+	last := -1
+	for _, key := range requireKeys {
+		idx := strings.Index(got, key)
+		if idx == -1 {
+			t.Fatalf("missing require key %s in output:\n%s", key, got)
+		}
+		if idx <= last {
+			t.Fatalf("require key %s moved out of order in output:\n%s", key, got)
+		}
+		last = idx
 	}
 }
 
