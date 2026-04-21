@@ -19,6 +19,15 @@ import (
 	"github.com/van-sprundel/vif/internal/testhelper"
 )
 
+func decodeSolverRecord(t testing.TB, body []byte) packagist.SolverPackageRecord {
+	t.Helper()
+	var record packagist.SolverPackageRecord
+	if err := json.Unmarshal(body, &record); err != nil {
+		t.Fatalf("unmarshal solver record: %v", err)
+	}
+	return record
+}
+
 // sampleResponse returns a minimal but realistic Packagist p2 response.
 func sampleResponse() packagist.APIResponse {
 	return packagist.APIResponse{
@@ -1009,6 +1018,149 @@ func TestPersistentMetadataCacheIgnoresCorruptBody(t *testing.T) {
 	}
 	if requestCount != 2 {
 		t.Fatalf("expected 2 HTTP requests, got %d", requestCount)
+	}
+}
+
+func TestCompactSolverMetadataPersistedOnFetch(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/p2/acme/foo.json":
+			w.Header().Set("ETag", `"etag-stable"`)
+			_, _ = w.Write(data)
+		case "/p2/acme/foo~dev.json":
+			w.Header().Set("ETag", `"etag-dev"`)
+			_, _ = w.Write(data)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cacheDir := testhelper.TempDir(t, "cache")
+	mc, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer mc.Close()
+
+	client := packagist.NewClient(srv.URL)
+	client.SetMetadataCache(mc)
+
+	versions, err := client.GetPackage(context.Background(), "acme/foo")
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+
+	stableEntry, ok, err := mc.LookupSolverMetadata(srv.URL, "acme/foo", false)
+	if err != nil || !ok {
+		t.Fatalf("LookupSolverMetadata stable: ok=%v err=%v", ok, err)
+	}
+	stableRecord := decodeSolverRecord(t, stableEntry.Body)
+	if stableEntry.SchemaVer != packagist.SolverMetadataSchemaVersion {
+		t.Fatalf("stable schema = %d, want %d", stableEntry.SchemaVer, packagist.SolverMetadataSchemaVersion)
+	}
+	if stableRecord.Name != "acme/foo" {
+		t.Fatalf("stable name = %q, want acme/foo", stableRecord.Name)
+	}
+	if stableRecord.DevIncluded {
+		t.Fatal("stable record DevIncluded = true, want false")
+	}
+	if stableRecord.SourceETag != `"etag-stable"` {
+		t.Fatalf("stable SourceETag = %q, want %q", stableRecord.SourceETag, `"etag-stable"`)
+	}
+	if stableRecord.SourceHash == "" {
+		t.Fatal("stable SourceHash is empty")
+	}
+	if len(stableRecord.Versions) != 3 {
+		t.Fatalf("stable versions = %d, want 3", len(stableRecord.Versions))
+	}
+	if stableRecord.Versions[0].Require["acme/bar"] != "^1.0" {
+		t.Fatalf("stable require[acme/bar] = %q, want ^1.0", stableRecord.Versions[0].Require["acme/bar"])
+	}
+	if stableRecord.Versions[0].RequirePHP != ">=8.0" {
+		t.Fatalf("stable RequirePHP = %q, want >=8.0", stableRecord.Versions[0].RequirePHP)
+	}
+	if stableRecord.Versions[0].RequireExt != nil {
+		t.Fatalf("stable RequireExt = %v, want nil", stableRecord.Versions[0].RequireExt)
+	}
+	if stableRecord.Versions[2].Stability != "dev" {
+		t.Fatalf("dev version stability = %q, want dev", stableRecord.Versions[2].Stability)
+	}
+
+	devEntry, ok, err := mc.LookupSolverMetadata(srv.URL, "acme/foo", true)
+	if err != nil || !ok {
+		t.Fatalf("LookupSolverMetadata dev: ok=%v err=%v", ok, err)
+	}
+	devRecord := decodeSolverRecord(t, devEntry.Body)
+	if !devRecord.DevIncluded {
+		t.Fatal("dev record DevIncluded = false, want true")
+	}
+	if devRecord.SourceETag != `"etag-dev"` {
+		t.Fatalf("dev SourceETag = %q, want %q", devRecord.SourceETag, `"etag-dev"`)
+	}
+}
+
+func TestCompactSolverMetadataGeneratedFromPersistentRawCache(t *testing.T) {
+	resp := sampleResponse()
+	data, _ := json.Marshal(resp)
+	var requestCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/p2/acme/foo.json" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("If-None-Match") == `"etag-persistent"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"etag-persistent"`)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	cacheDir := testhelper.TempDir(t, "cache")
+	mc, err := cache.New(cacheDir)
+	if err != nil {
+		t.Fatalf("cache.New: %v", err)
+	}
+	defer mc.Close()
+
+	if err := mc.InsertMetadata(srv.URL, "acme/foo", `"etag-persistent"`, data); err != nil {
+		t.Fatalf("InsertMetadata: %v", err)
+	}
+
+	client := packagist.NewClient(srv.URL)
+	client.SetMetadataCache(mc)
+
+	versions, err := client.GetPackageWithDev(context.Background(), "acme/foo", false)
+	if err != nil {
+		t.Fatalf("GetPackageWithDev: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
+
+	entry, ok, err := mc.LookupSolverMetadata(srv.URL, "acme/foo", false)
+	if err != nil || !ok {
+		t.Fatalf("LookupSolverMetadata: ok=%v err=%v", ok, err)
+	}
+	record := decodeSolverRecord(t, entry.Body)
+	if record.SourceETag != `"etag-persistent"` {
+		t.Fatalf("SourceETag = %q, want %q", record.SourceETag, `"etag-persistent"`)
+	}
+	if record.SourceHash == "" {
+		t.Fatal("SourceHash is empty")
 	}
 }
 

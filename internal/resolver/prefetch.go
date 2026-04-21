@@ -166,13 +166,28 @@ func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []str
 					progress(name)
 				}
 				start := time.Now()
-				versions, err := fetchPackageVersions(ctx, client, name, includeDev)
+				record, hasSolver, solverErr := fetchSolverPackage(ctx, client, name, includeDev)
+				var (
+					versions []packagist.VersionEntry
+					err      error
+				)
+				if hasSolver {
+					err = solverErr
+				} else {
+					versions, err = fetchPackageVersions(ctx, client, name, includeDev)
+				}
 				if lookupDone != nil {
 					lookupDone(name, time.Since(start), err)
 				}
 
 				// Populate cache immediately as each result arrives.
-				if entry := buildCacheEntry(name, versions, err, preferStable, includeDev, lockedEntries); entry != nil {
+				var entry *candidateCacheEntry
+				if hasSolver {
+					entry = buildCacheEntryFromSolverRecord(name, record, err, preferStable, includeDev, lockedEntries)
+				} else {
+					entry = buildCacheEntry(name, versions, err, preferStable, includeDev, lockedEntries)
+				}
+				if entry != nil {
 					cacheMu.Lock()
 					if _, exists := cache[name]; !exists {
 						cache[name] = *entry
@@ -182,13 +197,25 @@ func prefetchInto(ctx context.Context, client packagist.Fetcher, rootNames []str
 
 				// Discover transitive dependencies and enqueue new ones.
 				if err == nil {
-					scan := versions
-					if len(scan) > prefetchDependencyScanVersionLimit {
-						scan = scan[:prefetchDependencyScanVersionLimit]
-					}
-					for _, v := range scan {
-						for dep := range v.NonPlatformRequire() {
-							enqueue(dep)
+					if hasSolver {
+						scan := record.Versions
+						if len(scan) > prefetchDependencyScanVersionLimit {
+							scan = scan[:prefetchDependencyScanVersionLimit]
+						}
+						for _, v := range scan {
+							for dep := range v.Require {
+								enqueue(dep)
+							}
+						}
+					} else {
+						scan := versions
+						if len(scan) > prefetchDependencyScanVersionLimit {
+							scan = scan[:prefetchDependencyScanVersionLimit]
+						}
+						for _, v := range scan {
+							for dep := range v.NonPlatformRequire() {
+								enqueue(dep)
+							}
 						}
 					}
 				}
@@ -218,13 +245,8 @@ func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, 
 		if errors.Is(err, packagist.ErrPackageNotFound) {
 			// Try locked entry for VCS-only packages.
 			if entry, ok := lockedEntries[name]; ok {
-				if v, parseErr := version.Parse(entry.Version); parseErr == nil {
-					candidates := []candidate{{
-						entry:        entry,
-						version:      v,
-						dependencies: parseDependencyRequirements(entry),
-						conflicts:    parseConflictRequirements(entry),
-					}}
+				if cand, ok := candidateFromVersionEntry(entry, true); ok {
+					candidates := []candidate{cand}
 					sortCandidates(candidates, preferStable)
 					return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
 				}
@@ -236,32 +258,49 @@ func buildCacheEntry(name string, versions []packagist.VersionEntry, err error, 
 
 	var candidates []candidate
 	for _, entry := range versions {
-		v, parseErr := version.Parse(entry.Version)
-		if parseErr != nil {
+		cand, ok := candidateFromVersionEntry(entry, true)
+		if !ok {
 			continue
 		}
-		candidates = append(candidates, candidate{
-			entry:        entry,
-			version:      v,
-			dependencies: parseDependencyRequirements(entry),
-			conflicts:    parseConflictRequirements(entry),
-		})
+		candidates = append(candidates, cand)
 	}
 
 	// Inject locked entry if Packagist returned no usable versions.
 	if len(candidates) == 0 {
 		if entry, ok := lockedEntries[name]; ok {
-			if v, parseErr := version.Parse(entry.Version); parseErr == nil {
-				candidates = []candidate{{
-					entry:        entry,
-					version:      v,
-					dependencies: parseDependencyRequirements(entry),
-					conflicts:    parseConflictRequirements(entry),
-				}}
+			if cand, ok := candidateFromVersionEntry(entry, true); ok {
+				candidates = []candidate{cand}
 			}
 		}
 	}
 
+	sortCandidates(candidates, preferStable)
+	return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
+}
+
+func buildCacheEntryFromSolverRecord(name string, record packagist.SolverPackageRecord, err error, preferStable bool, includeDev bool, lockedEntries map[string]packagist.VersionEntry) *candidateCacheEntry {
+	if err != nil {
+		if errors.Is(err, packagist.ErrPackageNotFound) {
+			if entry, ok := lockedEntries[name]; ok {
+				if cand, ok := candidateFromVersionEntry(entry, true); ok {
+					candidates := []candidate{cand}
+					sortCandidates(candidates, preferStable)
+					return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
+				}
+			}
+			return nil
+		}
+		return &candidateCacheEntry{err: err, hasDev: includeDev}
+	}
+
+	candidates := candidatesFromSolverRecord(name, record, func(packagist.VersionEntry) bool { return true })
+	if len(candidates) == 0 {
+		if entry, ok := lockedEntries[name]; ok {
+			if cand, ok := candidateFromVersionEntry(entry, true); ok {
+				candidates = []candidate{cand}
+			}
+		}
+	}
 	sortCandidates(candidates, preferStable)
 	return &candidateCacheEntry{candidates: candidates, hasDev: includeDev}
 }
@@ -295,16 +334,11 @@ func populateVersionCache(cache map[string]candidateCacheEntry, prefetched map[s
 		}
 		var candidates []candidate
 		for _, entry := range result.versions {
-			v, err := version.Parse(entry.Version)
-			if err != nil {
+			cand, ok := candidateFromVersionEntry(entry, true)
+			if !ok {
 				continue
 			}
-			candidates = append(candidates, candidate{
-				entry:        entry,
-				version:      v,
-				dependencies: parseDependencyRequirements(entry),
-				conflicts:    parseConflictRequirements(entry),
-			})
+			candidates = append(candidates, cand)
 		}
 		// Sort descending by version (highest first), matching getCandidates order.
 		sortCandidates(candidates, preferStable)
@@ -336,19 +370,13 @@ func injectLockedEntries(cache map[string]candidateCacheEntry, prefetched map[st
 			continue
 		}
 
-		// Parse the locked version.
-		v, err := version.Parse(entry.Version)
-		if err != nil {
+		cand, ok := candidateFromVersionEntry(entry, true)
+		if !ok {
 			continue
 		}
 
 		// Inject the locked entry as the only candidate.
-		candidates := []candidate{{
-			entry:        entry,
-			version:      v,
-			dependencies: parseDependencyRequirements(entry),
-			conflicts:    parseConflictRequirements(entry),
-		}}
+		candidates := []candidate{cand}
 		sortCandidates(candidates, preferStable)
 		cache[name] = candidateCacheEntry{candidates: candidates}
 	}

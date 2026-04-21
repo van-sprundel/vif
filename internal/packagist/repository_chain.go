@@ -247,6 +247,190 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 	return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 }
 
+func (c *Chain) GetSolverPackage(ctx context.Context, name string, includeDev bool) (SolverPackageRecord, error) {
+	type candidate struct {
+		idx    int
+		source Fetcher
+	}
+	var candidates []candidate
+	for i, source := range c.sources {
+		if source == nil {
+			continue
+		}
+		if matcher, ok := source.(packageMatcher); ok && !matcher.MatchPackage(name) {
+			continue
+		}
+		if c.shouldSkipPrefix(i, name) {
+			continue
+		}
+		candidates = append(candidates, candidate{idx: i, source: source})
+	}
+
+	if len(candidates) == 0 {
+		return SolverPackageRecord{}, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	if len(candidates) == 1 {
+		return c.fetchSolverFromSource(ctx, candidates[0].idx, candidates[0].source, name, includeDev)
+	}
+
+	type result struct {
+		idx      int
+		source   Fetcher
+		record   SolverPackageRecord
+		err      error
+		duration time.Duration
+	}
+	lookupCtx, lookupCancel := context.WithCancel(ctx)
+	defer lookupCancel()
+
+	ch := make(chan result, len(candidates))
+	for _, cand := range candidates {
+		go func(cand candidate) {
+			isProber := c.awaitOrStartProbe(lookupCtx, cand.idx, name)
+			if !isProber && c.shouldSkipPrefix(cand.idx, name) {
+				ch <- result{idx: cand.idx, source: cand.source, err: ErrPackageNotFound}
+				return
+			}
+			start := time.Now()
+			record, err := fetchSolverFromFetcher(lookupCtx, cand.source, name, includeDev)
+			c.recordPrefixResult(cand.idx, name, err)
+			if isProber {
+				c.finishProbe(cand.idx, name)
+			}
+			ch <- result{
+				idx:      cand.idx,
+				source:   cand.source,
+				record:   record,
+				err:      err,
+				duration: time.Since(start),
+			}
+		}(cand)
+	}
+
+	var collected []result
+	var hitResult *result
+	for range candidates {
+		r := <-ch
+		collected = append(collected, r)
+		if r.err == nil && hitResult == nil {
+			hitResult = &r
+			lookupCancel()
+		}
+	}
+
+	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
+	for _, r := range collected {
+		if c.trace != nil && r.duration > 0 {
+			c.trace(LookupTrace{
+				Source:   repositoryLabel(r.source),
+				Package:  name,
+				Duration: r.duration,
+				Err:      r.err,
+			})
+		}
+	}
+	if hitResult != nil {
+		return hitResult.record, nil
+	}
+	errs := make([]error, 0, len(collected))
+	for _, r := range collected {
+		errs = append(errs, r.err)
+	}
+	return SolverPackageRecord{}, classifyLookupErrors(errs, name)
+}
+
+func (c *Chain) GetPackageVersion(ctx context.Context, name, selectedVersion string, includeDev bool) (VersionEntry, error) {
+	type candidate struct {
+		idx    int
+		source Fetcher
+	}
+	var candidates []candidate
+	for i, source := range c.sources {
+		if source == nil {
+			continue
+		}
+		if matcher, ok := source.(packageMatcher); ok && !matcher.MatchPackage(name) {
+			continue
+		}
+		if c.shouldSkipPrefix(i, name) {
+			continue
+		}
+		candidates = append(candidates, candidate{idx: i, source: source})
+	}
+
+	if len(candidates) == 0 {
+		return VersionEntry{}, fmt.Errorf("%w: %s@%s", ErrPackageNotFound, name, selectedVersion)
+	}
+	if len(candidates) == 1 {
+		return c.fetchVersionFromSource(ctx, candidates[0].idx, candidates[0].source, name, selectedVersion, includeDev)
+	}
+
+	type result struct {
+		idx      int
+		source   Fetcher
+		entry    VersionEntry
+		err      error
+		duration time.Duration
+	}
+	lookupCtx, lookupCancel := context.WithCancel(ctx)
+	defer lookupCancel()
+
+	ch := make(chan result, len(candidates))
+	for _, cand := range candidates {
+		go func(cand candidate) {
+			isProber := c.awaitOrStartProbe(lookupCtx, cand.idx, name)
+			if !isProber && c.shouldSkipPrefix(cand.idx, name) {
+				ch <- result{idx: cand.idx, source: cand.source, err: ErrPackageNotFound}
+				return
+			}
+			start := time.Now()
+			entry, err := fetchVersionFromFetcher(lookupCtx, cand.source, name, selectedVersion, includeDev)
+			c.recordPrefixResult(cand.idx, name, err)
+			if isProber {
+				c.finishProbe(cand.idx, name)
+			}
+			ch <- result{
+				idx:      cand.idx,
+				source:   cand.source,
+				entry:    entry,
+				err:      err,
+				duration: time.Since(start),
+			}
+		}(cand)
+	}
+
+	var collected []result
+	var hitResult *result
+	for range candidates {
+		r := <-ch
+		collected = append(collected, r)
+		if r.err == nil && hitResult == nil {
+			hitResult = &r
+			lookupCancel()
+		}
+	}
+
+	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
+	for _, r := range collected {
+		if c.trace != nil && r.duration > 0 {
+			c.trace(LookupTrace{
+				Source:   repositoryLabel(r.source),
+				Package:  name,
+				Duration: r.duration,
+				Err:      r.err,
+			})
+		}
+	}
+	if hitResult != nil {
+		return hitResult.entry, nil
+	}
+	errs := make([]error, 0, len(collected))
+	for _, r := range collected {
+		errs = append(errs, r.err)
+	}
+	return VersionEntry{}, classifyLookupErrors(errs, name)
+}
+
 // fetchFromSource performs a single-source lookup with probe gating and tracing.
 func (c *Chain) fetchFromSource(ctx context.Context, idx int, source Fetcher, name string, includeDev bool) ([]VersionEntry, error) {
 	isProber := c.awaitOrStartProbe(ctx, idx, name)
@@ -276,6 +460,115 @@ func (c *Chain) fetchFromSource(ctx context.Context, idx int, source Fetcher, na
 		})
 	}
 	return versions, err
+}
+
+func (c *Chain) fetchSolverFromSource(ctx context.Context, idx int, source Fetcher, name string, includeDev bool) (SolverPackageRecord, error) {
+	isProber := c.awaitOrStartProbe(ctx, idx, name)
+	if !isProber && c.shouldSkipPrefix(idx, name) {
+		return SolverPackageRecord{}, ErrPackageNotFound
+	}
+	start := time.Now()
+	record, err := fetchSolverFromFetcher(ctx, source, name, includeDev)
+	c.recordPrefixResult(idx, name, err)
+	if isProber {
+		c.finishProbe(idx, name)
+	}
+	if c.trace != nil {
+		c.trace(LookupTrace{
+			Source:   repositoryLabel(source),
+			Package:  name,
+			Duration: time.Since(start),
+			Err:      err,
+		})
+	}
+	return record, err
+}
+
+func (c *Chain) fetchVersionFromSource(ctx context.Context, idx int, source Fetcher, name, selectedVersion string, includeDev bool) (VersionEntry, error) {
+	isProber := c.awaitOrStartProbe(ctx, idx, name)
+	if !isProber && c.shouldSkipPrefix(idx, name) {
+		return VersionEntry{}, ErrPackageNotFound
+	}
+	start := time.Now()
+	entry, err := fetchVersionFromFetcher(ctx, source, name, selectedVersion, includeDev)
+	c.recordPrefixResult(idx, name, err)
+	if isProber {
+		c.finishProbe(idx, name)
+	}
+	if c.trace != nil {
+		c.trace(LookupTrace{
+			Source:   repositoryLabel(source),
+			Package:  name,
+			Duration: time.Since(start),
+			Err:      err,
+		})
+	}
+	return entry, err
+}
+
+func fetchSolverFromFetcher(ctx context.Context, source Fetcher, name string, includeDev bool) (SolverPackageRecord, error) {
+	if solverSource, ok := source.(SolverFetcher); ok {
+		return solverSource.GetSolverPackage(ctx, name, includeDev)
+	}
+	if devSource, ok := source.(DevFetcher); ok {
+		versions, err := devSource.GetPackageWithDev(ctx, name, includeDev)
+		if err != nil {
+			return SolverPackageRecord{}, err
+		}
+		return NormalizeForSolver(repositoryLabel(source), name, versions, includeDev, "", nil), nil
+	}
+	versions, err := source.GetPackage(ctx, name)
+	if err != nil {
+		return SolverPackageRecord{}, err
+	}
+	return NormalizeForSolver(repositoryLabel(source), name, versions, includeDev, "", nil), nil
+}
+
+func fetchVersionFromFetcher(ctx context.Context, source Fetcher, name, selectedVersion string, includeDev bool) (VersionEntry, error) {
+	if versionSource, ok := source.(PackageVersionFetcher); ok {
+		return versionSource.GetPackageVersion(ctx, name, selectedVersion, includeDev)
+	}
+	var (
+		versions []VersionEntry
+		err      error
+	)
+	if devSource, ok := source.(DevFetcher); ok {
+		versions, err = devSource.GetPackageWithDev(ctx, name, includeDev)
+	} else {
+		versions, err = source.GetPackage(ctx, name)
+	}
+	if err != nil {
+		return VersionEntry{}, err
+	}
+	for _, entry := range versions {
+		if entry.Version == selectedVersion {
+			return entry, nil
+		}
+	}
+	return VersionEntry{}, fmt.Errorf("%w: %s@%s", ErrPackageNotFound, name, selectedVersion)
+}
+
+func classifyLookupErrors(results []error, name string) error {
+	var lastNotFound, lastAuthErr, lastTransientErr error
+	for _, err := range results {
+		if errors.Is(err, ErrPackageNotFound) {
+			lastNotFound = err
+		} else if errors.Is(err, ErrAuthRequired) {
+			lastAuthErr = err
+		} else if isTransientRepositoryError(err) {
+			lastTransientErr = err
+		}
+	}
+	if lastAuthErr != nil {
+		return lastAuthErr
+	}
+	if lastTransientErr != nil {
+		return lastTransientErr
+	}
+	if lastNotFound != nil {
+		return lastNotFound
+	}
+	return fmt.Errorf("%w: %s", ErrPackageNotFound, name)
 }
 
 func isTransientRepositoryError(err error) bool {

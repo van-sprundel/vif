@@ -310,6 +310,101 @@ func TestMetadataDifferentRepos(t *testing.T) {
 	}
 }
 
+func TestInsertAndLookupSolverMetadata(t *testing.T) {
+	dir := testhelper.TempDir(t, "cache")
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	repoURL := "https://repo.packagist.org"
+	pkg := "acme/foo"
+	body := []byte(`{"name":"acme/foo","versions":[{"version":"1.0.0"}]}`)
+
+	_, ok, err := c.LookupSolverMetadata(repoURL, pkg, true)
+	if err != nil {
+		t.Fatalf("LookupSolverMetadata: %v", err)
+	}
+	if ok {
+		t.Fatal("LookupSolverMetadata returned true before insert")
+	}
+
+	if err := c.InsertSolverMetadata(repoURL, pkg, true, `"etag-solver"`, "hash-solver", 1, body); err != nil {
+		t.Fatalf("InsertSolverMetadata: %v", err)
+	}
+
+	entry, ok, err := c.LookupSolverMetadata(repoURL, pkg, true)
+	if err != nil {
+		t.Fatalf("LookupSolverMetadata: %v", err)
+	}
+	if !ok {
+		t.Fatal("LookupSolverMetadata returned false after insert")
+	}
+	if entry.SourceETag != `"etag-solver"` {
+		t.Errorf("SourceETag = %q, want %q", entry.SourceETag, `"etag-solver"`)
+	}
+	if entry.SourceHash != "hash-solver" {
+		t.Errorf("SourceHash = %q, want %q", entry.SourceHash, "hash-solver")
+	}
+	if entry.SchemaVer != 1 {
+		t.Errorf("SchemaVer = %d, want 1", entry.SchemaVer)
+	}
+	if string(entry.Body) != string(body) {
+		t.Errorf("Body = %q, want %q", entry.Body, body)
+	}
+	if !entry.DevIncluded {
+		t.Error("DevIncluded = false, want true")
+	}
+	if entry.GeneratedAt == 0 {
+		t.Error("GeneratedAt is zero")
+	}
+}
+
+func TestSolverMetadataUpsertAndDevIsolation(t *testing.T) {
+	dir := testhelper.TempDir(t, "cache")
+	c, err := cache.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	repoURL := "https://repo.packagist.org"
+	pkg := "acme/foo"
+	body1 := []byte(`{"name":"acme/foo","versions":[{"version":"1.0.0"}]}`)
+	body2 := []byte(`{"name":"acme/foo","versions":[{"version":"2.0.0"}]}`)
+	devBody := []byte(`{"name":"acme/foo","dev_included":true,"versions":[{"version":"dev-main"}]}`)
+
+	if err := c.InsertSolverMetadata(repoURL, pkg, false, `"etag-v1"`, "hash-v1", 1, body1); err != nil {
+		t.Fatalf("InsertSolverMetadata stable 1: %v", err)
+	}
+	if err := c.InsertSolverMetadata(repoURL, pkg, false, `"etag-v2"`, "hash-v2", 1, body2); err != nil {
+		t.Fatalf("InsertSolverMetadata stable 2: %v", err)
+	}
+	if err := c.InsertSolverMetadata(repoURL, pkg, true, `"etag-dev"`, "hash-dev", 1, devBody); err != nil {
+		t.Fatalf("InsertSolverMetadata dev: %v", err)
+	}
+
+	stable, ok, err := c.LookupSolverMetadata(repoURL, pkg, false)
+	if err != nil || !ok {
+		t.Fatalf("LookupSolverMetadata stable: ok=%v err=%v", ok, err)
+	}
+	dev, ok, err := c.LookupSolverMetadata(repoURL, pkg, true)
+	if err != nil || !ok {
+		t.Fatalf("LookupSolverMetadata dev: ok=%v err=%v", ok, err)
+	}
+
+	if stable.SourceETag != `"etag-v2"` {
+		t.Errorf("stable SourceETag = %q, want %q", stable.SourceETag, `"etag-v2"`)
+	}
+	if string(stable.Body) != string(body2) {
+		t.Errorf("stable Body = %q, want %q", stable.Body, body2)
+	}
+	if string(dev.Body) != string(devBody) {
+		t.Errorf("dev Body = %q, want %q", dev.Body, devBody)
+	}
+}
+
 func BenchmarkInsert(b *testing.B) {
 	dir := testhelper.TempDir(b, "cache")
 	c, err := cache.New(dir)

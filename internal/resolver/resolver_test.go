@@ -3,6 +3,7 @@ package resolver_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1176,6 +1177,96 @@ func TestResolveReplace(t *testing.T) {
 	byName := indexByName(resolved)
 	if _, ok := byName["acme/new-lib"]; !ok {
 		t.Error("missing acme/new-lib")
+	}
+}
+
+type compactHydratingFetcher struct {
+	records      map[string]packagist.SolverPackageRecord
+	full         map[string][]packagist.VersionEntry
+	getCalls     int
+	hydrateCalls int
+}
+
+func (f *compactHydratingFetcher) GetPackage(_ context.Context, name string) ([]packagist.VersionEntry, error) {
+	f.getCalls++
+	return nil, fmt.Errorf("unexpected full fetch for %s", name)
+}
+
+func (f *compactHydratingFetcher) GetSolverPackage(_ context.Context, name string, includeDev bool) (packagist.SolverPackageRecord, error) {
+	record, ok := f.records[name]
+	if !ok {
+		return packagist.SolverPackageRecord{}, fmt.Errorf("%w: %s", packagist.ErrPackageNotFound, name)
+	}
+	if includeDev {
+		record.DevIncluded = true
+	}
+	return record, nil
+}
+
+func (f *compactHydratingFetcher) GetPackageVersion(_ context.Context, name, selectedVersion string, includeDev bool) (packagist.VersionEntry, error) {
+	f.hydrateCalls++
+	for _, entry := range f.full[name] {
+		if entry.Version == selectedVersion {
+			return entry, nil
+		}
+	}
+	return packagist.VersionEntry{}, fmt.Errorf("%w: %s@%s", packagist.ErrPackageNotFound, name, selectedVersion)
+}
+
+func TestResolveHydratesCompactSolverCandidates(t *testing.T) {
+	full := map[string][]packagist.VersionEntry{
+		"acme/app": {{
+			Name:    "acme/app",
+			Version: "1.0.0",
+			Require: packagist.RelationMap{"acme/lib": "^1.0"},
+			Dist: packagist.DistEntry{
+				Type: "zip",
+				URL:  "https://example.com/acme/app-1.0.0.zip",
+			},
+		}},
+		"acme/lib": {{
+			Name:    "acme/lib",
+			Version: "1.2.0",
+			Dist: packagist.DistEntry{
+				Type: "zip",
+				URL:  "https://example.com/acme/lib-1.2.0.zip",
+			},
+		}},
+	}
+
+	records := make(map[string]packagist.SolverPackageRecord, len(full))
+	for name, versions := range full {
+		records[name] = packagist.NormalizeForSolver("test://solver", name, versions, false, "", nil)
+	}
+
+	client := &compactHydratingFetcher{
+		records: records,
+		full:    full,
+	}
+
+	cj := &composer.ComposerJSON{
+		Name:             "test/project",
+		Require:          map[string]string{"acme/app": "^1.0"},
+		MinimumStability: "stable",
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), cj, client)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if client.getCalls != 0 {
+		t.Fatalf("GetPackage called %d times, want 0", client.getCalls)
+	}
+	if client.hydrateCalls != 2 {
+		t.Fatalf("GetPackageVersion called %d times, want 2", client.hydrateCalls)
+	}
+
+	byName := indexByName(resolved)
+	if got := byName["acme/app"].Entry.Dist.URL; got != "https://example.com/acme/app-1.0.0.zip" {
+		t.Fatalf("acme/app dist = %q", got)
+	}
+	if got := byName["acme/lib"].Entry.Dist.URL; got != "https://example.com/acme/lib-1.2.0.zip" {
+		t.Fatalf("acme/lib dist = %q", got)
 	}
 }
 

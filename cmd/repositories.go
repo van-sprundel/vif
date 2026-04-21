@@ -30,6 +30,33 @@ func (r routedFetcher) GetPackageWithDev(ctx context.Context, name string, inclu
 	return r.Fetcher.GetPackage(ctx, name)
 }
 
+func (r routedFetcher) GetSolverPackage(ctx context.Context, name string, includeDev bool) (packagist.SolverPackageRecord, error) {
+	if solverFetcher, ok := r.Fetcher.(packagist.SolverFetcher); ok {
+		return solverFetcher.GetSolverPackage(ctx, name, includeDev)
+	}
+	versions, err := r.GetPackageWithDev(ctx, name, includeDev)
+	if err != nil {
+		return packagist.SolverPackageRecord{}, err
+	}
+	return packagist.NormalizeForSolver(r.label, name, versions, includeDev, "", nil), nil
+}
+
+func (r routedFetcher) GetPackageVersion(ctx context.Context, name, selectedVersion string, includeDev bool) (packagist.VersionEntry, error) {
+	if versionFetcher, ok := r.Fetcher.(packagist.PackageVersionFetcher); ok {
+		return versionFetcher.GetPackageVersion(ctx, name, selectedVersion, includeDev)
+	}
+	versions, err := r.GetPackageWithDev(ctx, name, includeDev)
+	if err != nil {
+		return packagist.VersionEntry{}, err
+	}
+	for _, entry := range versions {
+		if entry.Version == selectedVersion {
+			return entry, nil
+		}
+	}
+	return packagist.VersionEntry{}, packagist.ErrPackageNotFound
+}
+
 func (r routedFetcher) KnownVendorPrefixes() []string {
 	type prefixer interface {
 		KnownVendorPrefixes() []string

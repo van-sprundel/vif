@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/van-sprundel/vif/internal/cache"
 	"github.com/van-sprundel/vif/internal/composerauth"
 	"github.com/van-sprundel/vif/internal/pkg"
 	"golang.org/x/time/rate"
@@ -254,6 +255,17 @@ type DevFetcher interface {
 	GetPackageWithDev(context.Context, string, bool) ([]VersionEntry, error)
 }
 
+// SolverFetcher optionally returns compact resolver-oriented metadata records.
+type SolverFetcher interface {
+	GetSolverPackage(context.Context, string, bool) (SolverPackageRecord, error)
+}
+
+// PackageVersionFetcher optionally hydrates one selected package version with
+// the full metadata needed for lockfile/install generation.
+type PackageVersionFetcher interface {
+	GetPackageVersion(context.Context, string, string, bool) (VersionEntry, error)
+}
+
 const defaultHTTPTimeout = 10 * time.Second
 
 // defaultRateLimit is the sustained request rate per repository host.
@@ -331,6 +343,25 @@ func (c *Client) SetAuth(cfg *composerauth.Config) {
 // and persist fresh 200 responses back to the cache.
 func (c *Client) SetMetadataCache(mc MetadataCache) {
 	c.metaCache = mc
+}
+
+func (c *Client) persistSolverRecord(name string, versions []VersionEntry, devIncluded bool, sourceETag string, sourceBody []byte) {
+	if c.metaCache == nil {
+		return
+	}
+	solverCache, ok := c.metaCache.(interface {
+		InsertSolverMetadata(repoURL, packageName string, devIncluded bool, sourceETag, sourceHash string, schemaVer int, body []byte) error
+	})
+	if !ok {
+		return
+	}
+
+	record := NormalizeForSolver(c.baseURL, name, versions, devIncluded, sourceETag, sourceBody)
+	body, err := MarshalSolverRecord(record)
+	if err != nil {
+		return
+	}
+	_ = solverCache.InsertSolverMetadata(c.baseURL, name, devIncluded, record.SourceETag, record.SourceHash, SolverMetadataSchemaVersion, body)
 }
 
 const metadataMaxRetries = 3
@@ -518,6 +549,58 @@ func (c *Client) mergeDevVersions(ctx context.Context, name string, versions []V
 	return merged
 }
 
+func (c *Client) GetSolverPackage(ctx context.Context, name string, includeDev bool) (SolverPackageRecord, error) {
+	c.mu.RLock()
+	cached, hasCached := c.cache[name]
+	c.mu.RUnlock()
+	if hasCached && len(cached.versions) > 0 {
+		if includeDev && cached.devMerged {
+			return NormalizeForSolver(c.baseURL, name, cached.versions, true, cached.etag, nil), nil
+		}
+		if !includeDev && !cached.devMerged {
+			return NormalizeForSolver(c.baseURL, name, cached.versions, false, cached.etag, nil), nil
+		}
+	}
+
+	stableRecord, err := c.getSolverPackageP2(ctx, name)
+	if err != nil {
+		return SolverPackageRecord{}, err
+	}
+	if !includeDev {
+		return stableRecord, nil
+	}
+
+	devRecord := c.fetchSolverP2Dev(ctx, name)
+	if len(devRecord.Versions) == 0 {
+		return stableRecord, nil
+	}
+
+	merged := mergeSolverRecords(stableRecord, devRecord)
+	if err := c.persistSolverMetadataRecord(merged); err != nil {
+		return SolverPackageRecord{}, err
+	}
+	return merged, nil
+}
+
+func (c *Client) GetPackageVersion(ctx context.Context, name, selectedVersion string, includeDev bool) (VersionEntry, error) {
+	versions, err := c.cachedPackageVersions(name, includeDev)
+	if err == nil {
+		if entry, ok := findVersionEntry(versions, selectedVersion); ok {
+			return entry, nil
+		}
+	}
+
+	versions, err = c.GetPackageWithDev(ctx, name, includeDev)
+	if err != nil {
+		return VersionEntry{}, err
+	}
+	if entry, ok := findVersionEntry(versions, selectedVersion); ok {
+		return entry, nil
+	}
+
+	return VersionEntry{}, fmt.Errorf("%w: %s@%s", ErrPackageNotFound, name, selectedVersion)
+}
+
 func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntry, hasCached bool) ([]VersionEntry, error) {
 	// If no in-memory cache hit, try the persistent cache to seed the ETag.
 	if !hasCached && c.metaCache != nil {
@@ -531,6 +614,7 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 					c.mu.Lock()
 					c.cache[name] = cached
 					c.mu.Unlock()
+					c.persistSolverRecord(name, versions, false, etag, body)
 				}
 			}
 			// On unmarshal failure, fall through to a fresh HTTP request.
@@ -593,8 +677,100 @@ func (c *Client) getPackageP2(ctx context.Context, name string, cached cacheEntr
 	if c.metaCache != nil {
 		_ = c.metaCache.InsertMetadata(c.baseURL, name, etag, body)
 	}
+	c.persistSolverRecord(name, versions, false, etag, body)
 
 	return versions, nil
+}
+
+func (c *Client) getSolverPackageP2(ctx context.Context, name string) (SolverPackageRecord, error) {
+	c.mu.RLock()
+	cached, hasCached := c.cache[name]
+	authErr := c.authErr
+	c.mu.RUnlock()
+	if authErr {
+		return SolverPackageRecord{}, fmt.Errorf("%w: %s", ErrAuthRequired, name)
+	}
+	if hasCached && cached.notFound {
+		c.recordVendorResult(name, ErrPackageNotFound)
+		return SolverPackageRecord{}, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	if hasCached && len(cached.versions) > 0 && !cached.devMerged {
+		c.recordVendorResult(name, nil)
+		return NormalizeForSolver(c.baseURL, name, cached.versions, false, cached.etag, nil), nil
+	}
+
+	var (
+		cachedETag       string
+		cachedBody       []byte
+		hasPersistentRaw bool
+	)
+	if c.metaCache != nil {
+		etag, body, ok, err := c.metaCache.LookupMetadata(c.baseURL, name)
+		if err == nil && ok {
+			cachedETag = etag
+			cachedBody = body
+			hasPersistentRaw = true
+		}
+	}
+
+	solverRecord, hasSolver, err := c.lookupSolverMetadataRecord(name, false)
+	if err != nil {
+		return SolverPackageRecord{}, err
+	}
+	if hasSolver && hasPersistentRaw && !solverRecordMatchesRaw(solverRecord, cachedETag, cachedBody) {
+		hasSolver = false
+	}
+
+	url := fmt.Sprintf("%s/p2/%s.json", c.baseURL, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return SolverPackageRecord{}, fmt.Errorf("packagist: create request for %s: %w", name, err)
+	}
+	if cachedETag != "" {
+		req.Header.Set("If-None-Match", cachedETag)
+	}
+	c.auth.ApplyRequest(req)
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return SolverPackageRecord{}, fmt.Errorf("packagist: fetch %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotModified:
+		c.recordVendorResult(name, nil)
+		if hasSolver {
+			return solverRecord, nil
+		}
+		if !hasPersistentRaw {
+			return SolverPackageRecord{}, fmt.Errorf("packagist: solver cache missing raw metadata for %s", name)
+		}
+		return c.rebuildSolverRecord(name, false, cachedETag, cachedBody)
+	case http.StatusNotFound:
+		c.recordVendorResult(name, ErrPackageNotFound)
+		return SolverPackageRecord{}, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		c.mu.Lock()
+		c.authErr = true
+		c.mu.Unlock()
+		return SolverPackageRecord{}, fmt.Errorf("%w: %s", ErrAuthRequired, name)
+	case http.StatusOK:
+	default:
+		return SolverPackageRecord{}, fmt.Errorf("packagist: fetch %s: HTTP %d", name, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return SolverPackageRecord{}, fmt.Errorf("packagist: read response for %s: %w", name, err)
+	}
+
+	record, err := c.rebuildSolverRecord(name, false, resp.Header.Get("ETag"), body)
+	if err != nil {
+		return SolverPackageRecord{}, err
+	}
+	c.recordVendorResult(name, nil)
+	return record, nil
 }
 
 func (c *Client) fetchP2Dev(ctx context.Context, name string) []VersionEntry {
@@ -621,6 +797,7 @@ func (c *Client) fetchP2Dev(ctx context.Context, name string) []VersionEntry {
 					c.mu.Lock()
 					c.cache[devKey] = cached
 					c.mu.Unlock()
+					c.persistSolverRecord(name, versions, true, etag, body)
 				}
 			}
 		}
@@ -682,8 +859,98 @@ func (c *Client) fetchP2Dev(ctx context.Context, name string) []VersionEntry {
 	if c.metaCache != nil {
 		_ = c.metaCache.InsertMetadata(c.baseURL, devKey, etag, body)
 	}
+	c.persistSolverRecord(name, versions, true, etag, body)
 
 	return versions
+}
+
+func (c *Client) fetchSolverP2Dev(ctx context.Context, name string) SolverPackageRecord {
+	devKey := name + "~dev"
+
+	c.mu.RLock()
+	cached, hasCached := c.cache[devKey]
+	c.mu.RUnlock()
+	if hasCached {
+		if cached.notFound {
+			return SolverPackageRecord{}
+		}
+		if len(cached.versions) > 0 {
+			return NormalizeForSolver(c.baseURL, name, cached.versions, true, cached.etag, nil)
+		}
+	}
+
+	var (
+		cachedETag       string
+		cachedBody       []byte
+		hasPersistentRaw bool
+	)
+	if c.metaCache != nil {
+		etag, body, ok, err := c.metaCache.LookupMetadata(c.baseURL, devKey)
+		if err == nil && ok {
+			cachedETag = etag
+			cachedBody = body
+			hasPersistentRaw = true
+		}
+	}
+
+	record, hasSolver, err := c.lookupSolverMetadataRecord(name, true)
+	if err == nil && hasSolver && hasPersistentRaw && !solverRecordMatchesRaw(record, cachedETag, cachedBody) {
+		hasSolver = false
+	}
+	if err == nil && hasSolver && !hasPersistentRaw {
+		return record
+	}
+
+	url := fmt.Sprintf("%s/p2/%s~dev.json", c.baseURL, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return SolverPackageRecord{}
+	}
+	if cachedETag != "" {
+		req.Header.Set("If-None-Match", cachedETag)
+	}
+	c.auth.ApplyRequest(req)
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return SolverPackageRecord{}
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotModified:
+		if hasSolver {
+			return record
+		}
+		if !hasPersistentRaw {
+			return SolverPackageRecord{}
+		}
+		record, err = c.rebuildSolverRecord(name, true, cachedETag, cachedBody)
+		if err != nil {
+			return SolverPackageRecord{}
+		}
+		return record
+	case http.StatusNotFound:
+		c.mu.Lock()
+		c.cache[devKey] = cacheEntry{notFound: true}
+		c.mu.Unlock()
+		return SolverPackageRecord{}
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return SolverPackageRecord{}
+	case http.StatusOK:
+	default:
+		return SolverPackageRecord{}
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return SolverPackageRecord{}
+	}
+	record, err = c.rebuildSolverRecord(name, true, resp.Header.Get("ETag"), body)
+	if err != nil {
+		return SolverPackageRecord{}
+	}
+	return record
 }
 
 func mergeVersionEntries(stable, dev []VersionEntry) []VersionEntry {
@@ -705,6 +972,181 @@ func mergeVersionEntries(stable, dev []VersionEntry) []VersionEntry {
 		}
 	}
 	return merged
+}
+
+func mergeSolverRecords(stable, dev SolverPackageRecord) SolverPackageRecord {
+	if len(dev.Versions) == 0 {
+		return stable
+	}
+
+	merged := SolverPackageRecord{
+		Name:        stable.Name,
+		RepoURL:     stable.RepoURL,
+		DevIncluded: true,
+		SourceETag:  stable.SourceETag,
+		SourceHash:  stable.SourceHash,
+		Versions:    make([]SolverVersionRecord, 0, len(stable.Versions)+len(dev.Versions)),
+	}
+	seen := make(map[string]struct{}, len(stable.Versions)+len(dev.Versions))
+	for _, entry := range stable.Versions {
+		if _, ok := seen[entry.Version]; ok {
+			continue
+		}
+		seen[entry.Version] = struct{}{}
+		merged.Versions = append(merged.Versions, entry)
+	}
+	for _, entry := range dev.Versions {
+		if _, ok := seen[entry.Version]; ok {
+			continue
+		}
+		seen[entry.Version] = struct{}{}
+		merged.Versions = append(merged.Versions, entry)
+	}
+	if dev.SourceETag != "" {
+		merged.SourceETag = dev.SourceETag
+	}
+	if dev.SourceHash != "" {
+		merged.SourceHash = dev.SourceHash
+	}
+	return merged
+}
+
+func findVersionEntry(versions []VersionEntry, selectedVersion string) (VersionEntry, bool) {
+	for _, entry := range versions {
+		if entry.Version == selectedVersion {
+			return entry, true
+		}
+	}
+	return VersionEntry{}, false
+}
+
+func (c *Client) cachedPackageVersions(name string, includeDev bool) ([]VersionEntry, error) {
+	c.mu.RLock()
+	cached, hasCached := c.cache[name]
+	c.mu.RUnlock()
+	if hasCached && (cached.devMerged || !includeDev) && len(cached.versions) > 0 {
+		return cached.versions, nil
+	}
+
+	if c.metaCache == nil {
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+
+	etag, body, ok, err := c.metaCache.LookupMetadata(c.baseURL, name)
+	if err != nil || !ok {
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	versions, err := decodeVersionsFromBody(name, body)
+	if err != nil {
+		return nil, err
+	}
+	if !includeDev {
+		c.mu.Lock()
+		c.cache[name] = cacheEntry{etag: etag, versions: versions}
+		c.mu.Unlock()
+		return versions, nil
+	}
+
+	devKey := name + "~dev"
+	devETag, devBody, devOK, devErr := c.metaCache.LookupMetadata(c.baseURL, devKey)
+	if devErr == nil && devOK {
+		devVersions, err := decodeVersionsFromBody(name, devBody)
+		if err == nil {
+			versions = mergeVersionEntries(versions, devVersions)
+			c.mu.Lock()
+			c.cache[devKey] = cacheEntry{etag: devETag, versions: devVersions}
+			c.cache[name] = cacheEntry{etag: etag, versions: versions, devMerged: true}
+			c.mu.Unlock()
+			return versions, nil
+		}
+	}
+
+	c.mu.Lock()
+	c.cache[name] = cacheEntry{etag: etag, versions: versions}
+	c.mu.Unlock()
+	return versions, nil
+}
+
+func (c *Client) lookupSolverMetadataRecord(name string, devIncluded bool) (SolverPackageRecord, bool, error) {
+	solverCache, ok := c.metaCache.(interface {
+		LookupSolverMetadata(repoURL, packageName string, devIncluded bool) (entry cache.SolverMetadataEntry, ok bool, err error)
+	})
+	if !ok {
+		return SolverPackageRecord{}, false, nil
+	}
+
+	entry, found, err := solverCache.LookupSolverMetadata(c.baseURL, name, devIncluded)
+	if err != nil || !found {
+		return SolverPackageRecord{}, found, err
+	}
+	if entry.SchemaVer != SolverMetadataSchemaVersion {
+		return SolverPackageRecord{}, false, nil
+	}
+	record, err := UnmarshalSolverRecord(entry.Body)
+	if err != nil {
+		return SolverPackageRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
+func (c *Client) persistSolverMetadataRecord(record SolverPackageRecord) error {
+	solverCache, ok := c.metaCache.(interface {
+		InsertSolverMetadata(repoURL, packageName string, devIncluded bool, sourceETag, sourceHash string, schemaVer int, body []byte) error
+	})
+	if !ok {
+		return nil
+	}
+
+	body, err := MarshalSolverRecord(record)
+	if err != nil {
+		return err
+	}
+	return solverCache.InsertSolverMetadata(record.RepoURL, record.Name, record.DevIncluded, record.SourceETag, record.SourceHash, SolverMetadataSchemaVersion, body)
+}
+
+func (c *Client) rebuildSolverRecord(name string, devIncluded bool, etag string, body []byte) (SolverPackageRecord, error) {
+	versions, err := decodeVersionsFromBody(name, body)
+	if err != nil {
+		return SolverPackageRecord{}, err
+	}
+
+	record := NormalizeForSolver(c.baseURL, name, versions, devIncluded, etag, body)
+	if c.metaCache != nil {
+		cacheKey := name
+		if devIncluded {
+			cacheKey += "~dev"
+		}
+		_ = c.metaCache.InsertMetadata(c.baseURL, cacheKey, etag, body)
+	}
+	if err := c.persistSolverMetadataRecord(record); err != nil {
+		return SolverPackageRecord{}, err
+	}
+	return record, nil
+}
+
+func decodeVersionsFromBody(name string, body []byte) ([]VersionEntry, error) {
+	var apiResp APIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("packagist: unmarshal %s: %w", name, err)
+	}
+	versions, ok := apiResp.Packages[name]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, name)
+	}
+	return versions, nil
+}
+
+func solverRecordMatchesRaw(record SolverPackageRecord, etag string, body []byte) bool {
+	if record.Name == "" {
+		return false
+	}
+	if etag != "" && record.SourceETag != "" && record.SourceETag != etag {
+		return false
+	}
+	if len(body) == 0 {
+		return true
+	}
+	return record.SourceHash == solverSourceHash(body)
 }
 
 func (c *Client) getPackageFromRootIncludes(ctx context.Context, name string) ([]VersionEntry, error) {

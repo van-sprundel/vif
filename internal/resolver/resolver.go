@@ -198,6 +198,10 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	prefetchCancel()
 	prefetchWg.Wait()
 
+	if err := r.hydrateResolvedEntries(state); err != nil {
+		return nil, err
+	}
+
 	// Collect results.
 	result := make([]ResolvedPackage, 0, len(state.resolved))
 	for name, entry := range state.resolved {
@@ -225,6 +229,7 @@ type resolvedEntry struct {
 	version   version.Version
 	conflicts []dependencyRequirement
 	dev       bool
+	hydrated  bool
 }
 
 type candidate struct {
@@ -232,6 +237,7 @@ type candidate struct {
 	version      version.Version
 	dependencies []dependencyRequirement
 	conflicts    []dependencyRequirement
+	hydrated     bool
 }
 
 type candidateCacheEntry struct {
@@ -507,7 +513,7 @@ func (r *resolver) solve(s *state, reqs []requirement) bool {
 		prevConstraints, hadConstraints := s.constraints[req.name]
 		mergedConstraints := appendConstraintsUnique(append([]version.Constraint{}, prevConstraints...), pendingConstraints)
 		prevResolved, hadResolved := s.resolved[req.name]
-		s.resolved[req.name] = resolvedEntry{entry: c.entry, version: c.version, conflicts: c.conflicts, dev: req.dev}
+		s.resolved[req.name] = resolvedEntry{entry: c.entry, version: c.version, conflicts: c.conflicts, dev: req.dev, hydrated: c.hydrated}
 		s.constraints[req.name] = mergedConstraints
 		type providerRollback struct {
 			name    string
@@ -786,58 +792,11 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 		r.progress(name)
 	}
 
-	versions, err := fetchPackageVersions(r.ctx, r.client, name, includeDev)
+	candidates, err := r.fetchCandidates(name, includeDev)
 	if err != nil {
-		if errors.Is(err, packagist.ErrPackageNotFound) {
-			if entry, ok := r.lockedEntries[name]; ok {
-				if v, parseErr := version.Parse(entry.Version); parseErr == nil {
-					candidates := []candidate{{
-						entry:        entry,
-						version:      v,
-						dependencies: parseDependencyRequirements(entry),
-						conflicts:    parseConflictRequirements(entry),
-					}}
-					sortCandidates(candidates, r.preferStable)
-					r.cacheSet(name, candidateCacheEntry{candidates: candidates, hasDev: includeDev})
-					filtered := filterByStability(candidates, effectiveStability)
-					return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
-				}
-			}
-		}
 		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
 		r.cacheSet(name, candidateCacheEntry{err: cachedErr, hasDev: includeDev})
 		return nil, cachedErr
-	}
-
-	var candidates []candidate
-	for _, entry := range versions {
-		v, err := version.Parse(entry.Version)
-		if err != nil {
-			continue
-		}
-		if !r.entryMatchesPlatform(entry) {
-			continue
-		}
-		candidates = append(candidates, candidate{
-			entry:        entry,
-			version:      v,
-			dependencies: parseDependencyRequirements(entry),
-			conflicts:    parseConflictRequirements(entry),
-		})
-	}
-
-	// If Packagist returned no versions, try to use locked entry (VCS-only packages).
-	if len(candidates) == 0 {
-		if entry, ok := r.lockedEntries[name]; ok {
-			if v, err := version.Parse(entry.Version); err == nil {
-				candidates = []candidate{{
-					entry:        entry,
-					version:      v,
-					dependencies: parseDependencyRequirements(entry),
-					conflicts:    parseConflictRequirements(entry),
-				}}
-			}
-		}
 	}
 
 	// Sort descending by version (highest first).
@@ -858,6 +817,79 @@ func fetchPackageVersions(ctx context.Context, client packagist.Fetcher, name st
 		return devClient.GetPackageWithDev(ctx, name, includeDev)
 	}
 	return client.GetPackage(ctx, name)
+}
+
+func fetchSolverPackage(ctx context.Context, client packagist.Fetcher, name string, includeDev bool) (packagist.SolverPackageRecord, bool, error) {
+	if client == nil {
+		return packagist.SolverPackageRecord{}, false, fmt.Errorf("%w: %s", packagist.ErrPackageNotFound, name)
+	}
+	solverClient, ok := client.(packagist.SolverFetcher)
+	if !ok {
+		return packagist.SolverPackageRecord{}, false, nil
+	}
+	record, err := solverClient.GetSolverPackage(ctx, name, includeDev)
+	return record, true, err
+}
+
+func (r *resolver) fetchCandidates(name string, includeDev bool) ([]candidate, error) {
+	if record, ok, err := fetchSolverPackage(r.ctx, r.client, name, includeDev); ok {
+		if err != nil {
+			return r.lockedCandidatesOnNotFound(name, err)
+		}
+		candidates := candidatesFromSolverRecord(name, record, r.entryMatchesPlatform)
+		if len(candidates) == 0 {
+			if candidates, ok := r.lockedCandidatesOnEmpty(name); ok {
+				return candidates, nil
+			}
+			return nil, nil
+		}
+		return candidates, nil
+	}
+
+	versions, err := fetchPackageVersions(r.ctx, r.client, name, includeDev)
+	if err != nil {
+		return r.lockedCandidatesOnNotFound(name, err)
+	}
+
+	candidates := make([]candidate, 0, len(versions))
+	for _, entry := range versions {
+		if !r.entryMatchesPlatform(entry) {
+			continue
+		}
+		cand, ok := candidateFromVersionEntry(entry, true)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, cand)
+	}
+	if len(candidates) == 0 {
+		if candidates, ok := r.lockedCandidatesOnEmpty(name); ok {
+			return candidates, nil
+		}
+		return nil, nil
+	}
+	return candidates, nil
+}
+
+func (r *resolver) lockedCandidatesOnNotFound(name string, err error) ([]candidate, error) {
+	if errors.Is(err, packagist.ErrPackageNotFound) {
+		if candidates, ok := r.lockedCandidatesOnEmpty(name); ok {
+			return candidates, nil
+		}
+	}
+	return nil, err
+}
+
+func (r *resolver) lockedCandidatesOnEmpty(name string) ([]candidate, bool) {
+	entry, ok := r.lockedEntries[name]
+	if !ok {
+		return nil, false
+	}
+	cand, ok := candidateFromVersionEntry(entry, true)
+	if !ok {
+		return nil, false
+	}
+	return []candidate{cand}, true
 }
 
 func (r *resolver) candidateProviders(name string) []string {
@@ -1342,6 +1374,98 @@ func parseConflictRequirements(entry packagist.VersionEntry) []dependencyRequire
 		conflicts = append(conflicts, dependencyRequirement{name: name, constraint: c, raw: raw})
 	}
 	return conflicts
+}
+
+func candidateFromVersionEntry(entry packagist.VersionEntry, hydrated bool) (candidate, bool) {
+	v, err := version.Parse(entry.Version)
+	if err != nil {
+		return candidate{}, false
+	}
+	return candidate{
+		entry:        entry,
+		version:      v,
+		dependencies: parseDependencyRequirements(entry),
+		conflicts:    parseConflictRequirements(entry),
+		hydrated:     hydrated,
+	}, true
+}
+
+func versionEntryFromSolverRecord(name string, record packagist.SolverVersionRecord) packagist.VersionEntry {
+	require := cloneRelationMap(record.Require)
+	if record.RequirePHP != "" {
+		if require == nil {
+			require = make(packagist.RelationMap)
+		}
+		require["php"] = record.RequirePHP
+	}
+	for dep, raw := range record.RequireExt {
+		if require == nil {
+			require = make(packagist.RelationMap)
+		}
+		require[dep] = raw
+	}
+	for dep, raw := range record.RequireLib {
+		if require == nil {
+			require = make(packagist.RelationMap)
+		}
+		require[dep] = raw
+	}
+	return packagist.VersionEntry{
+		Name:              name,
+		Version:           record.Version,
+		VersionNormalized: record.VersionNormalized,
+		Require:           require,
+		Conflict:          cloneRelationMap(record.Conflict),
+		Provide:           cloneRelationMap(record.Provide),
+		Replace:           cloneRelationMap(record.Replace),
+	}
+}
+
+func candidatesFromSolverRecord(name string, record packagist.SolverPackageRecord, matchesPlatform func(packagist.VersionEntry) bool) []candidate {
+	candidates := make([]candidate, 0, len(record.Versions))
+	for _, versionRecord := range record.Versions {
+		entry := versionEntryFromSolverRecord(name, versionRecord)
+		if !matchesPlatform(entry) {
+			continue
+		}
+		cand, ok := candidateFromVersionEntry(entry, false)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, cand)
+	}
+	return candidates
+}
+
+func cloneRelationMap(in map[string]string) packagist.RelationMap {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(packagist.RelationMap, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (r *resolver) hydrateResolvedEntries(s *state) error {
+	hydrator, ok := r.client.(packagist.PackageVersionFetcher)
+	if !ok {
+		return nil
+	}
+	for name, resolved := range s.resolved {
+		if resolved.hydrated {
+			continue
+		}
+		entry, err := hydrator.GetPackageVersion(r.ctx, name, resolved.entry.Version, resolved.version.Stability == version.Dev)
+		if err != nil {
+			return fmt.Errorf("resolver: hydrate %s@%s: %w", name, resolved.entry.Version, err)
+		}
+		resolved.entry = entry
+		resolved.hydrated = true
+		s.resolved[name] = resolved
+	}
+	return nil
 }
 
 func (r *resolver) rootSatisfies(name string, constraints []version.Constraint) bool {

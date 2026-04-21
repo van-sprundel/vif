@@ -24,12 +24,26 @@ type Entry struct {
 
 // Cache provides SQLite-backed package cache operations.
 type Cache struct {
-	db             *sql.DB
-	dir            string // root cache directory
-	insertPkgStmt  *sql.Stmt
-	lookupPkgStmt  *sql.Stmt
-	insertMetaStmt *sql.Stmt
-	lookupMetaStmt *sql.Stmt
+	db               *sql.DB
+	dir              string // root cache directory
+	insertPkgStmt    *sql.Stmt
+	lookupPkgStmt    *sql.Stmt
+	insertMetaStmt   *sql.Stmt
+	lookupMetaStmt   *sql.Stmt
+	insertSolverStmt *sql.Stmt
+	lookupSolverStmt *sql.Stmt
+}
+
+// SolverMetadataEntry stores a compact resolver-oriented metadata row.
+type SolverMetadataEntry struct {
+	RepoURL     string
+	Package     string
+	DevIncluded bool
+	SourceETag  string
+	SourceHash  string
+	SchemaVer   int
+	Body        []byte
+	GeneratedAt int64
 }
 
 // CacheKey computes the cache key for a dist URL: hex-encoded SHA-256.
@@ -73,6 +87,10 @@ func New(dir string) (*Cache, error) {
 	if _, err := db.Exec(createMetadataTable); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("cache: create metadata table: %w", err)
+	}
+	if _, err := db.Exec(createSolverMetadataTable); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("cache: create solver metadata table: %w", err)
 	}
 
 	insertPkgStmt, err := db.Prepare(`
@@ -128,18 +146,60 @@ func New(dir string) (*Cache, error) {
 		return nil, fmt.Errorf("cache: prepare metadata lookup: %w", err)
 	}
 
+	insertSolverStmt, err := db.Prepare(`
+		INSERT INTO solver_metadata (repo_url, package, dev_included, source_etag, source_hash, schema_ver, body, generated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (repo_url, package, dev_included) DO UPDATE SET
+			source_etag  = excluded.source_etag,
+			source_hash  = excluded.source_hash,
+			schema_ver   = excluded.schema_ver,
+			body         = excluded.body,
+			generated_at = excluded.generated_at
+	`)
+	if err != nil {
+		lookupMetaStmt.Close()
+		insertMetaStmt.Close()
+		lookupPkgStmt.Close()
+		insertPkgStmt.Close()
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare solver metadata insert: %w", err)
+	}
+
+	lookupSolverStmt, err := db.Prepare(`
+		SELECT source_etag, source_hash, schema_ver, body, generated_at
+		FROM solver_metadata
+		WHERE repo_url = ? AND package = ? AND dev_included = ?
+	`)
+	if err != nil {
+		insertSolverStmt.Close()
+		lookupMetaStmt.Close()
+		insertMetaStmt.Close()
+		lookupPkgStmt.Close()
+		insertPkgStmt.Close()
+		db.Close()
+		return nil, fmt.Errorf("cache: prepare solver metadata lookup: %w", err)
+	}
+
 	return &Cache{
-		db:             db,
-		dir:            dir,
-		insertPkgStmt:  insertPkgStmt,
-		lookupPkgStmt:  lookupPkgStmt,
-		insertMetaStmt: insertMetaStmt,
-		lookupMetaStmt: lookupMetaStmt,
+		db:               db,
+		dir:              dir,
+		insertPkgStmt:    insertPkgStmt,
+		lookupPkgStmt:    lookupPkgStmt,
+		insertMetaStmt:   insertMetaStmt,
+		lookupMetaStmt:   lookupMetaStmt,
+		insertSolverStmt: insertSolverStmt,
+		lookupSolverStmt: lookupSolverStmt,
 	}, nil
 }
 
 // Close closes the underlying database connection.
 func (c *Cache) Close() error {
+	if c.lookupSolverStmt != nil {
+		_ = c.lookupSolverStmt.Close()
+	}
+	if c.insertSolverStmt != nil {
+		_ = c.insertSolverStmt.Close()
+	}
 	if c.lookupMetaStmt != nil {
 		_ = c.lookupMetaStmt.Close()
 	}
@@ -199,6 +259,44 @@ func (c *Cache) InsertMetadata(repoURL, packageName, etag string, body []byte) e
 	_, err := c.insertMetaStmt.Exec(repoURL, packageName, etag, body, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("cache: insert metadata %s %s: %w", repoURL, packageName, err)
+	}
+	return nil
+}
+
+// LookupSolverMetadata returns the cached compact solver metadata for a package from a specific repo.
+// Returns (entry, true, nil) if found, or (zero, false, nil) if not present.
+func (c *Cache) LookupSolverMetadata(repoURL, packageName string, devIncluded bool) (SolverMetadataEntry, bool, error) {
+	var (
+		entry   SolverMetadataEntry
+		devFlag int
+	)
+	if devIncluded {
+		devFlag = 1
+	}
+	err := c.lookupSolverStmt.QueryRow(repoURL, packageName, devFlag).Scan(
+		&entry.SourceETag, &entry.SourceHash, &entry.SchemaVer, &entry.Body, &entry.GeneratedAt,
+	)
+	if err == sql.ErrNoRows {
+		return SolverMetadataEntry{}, false, nil
+	}
+	if err != nil {
+		return SolverMetadataEntry{}, false, fmt.Errorf("cache: lookup solver metadata %s %s dev=%t: %w", repoURL, packageName, devIncluded, err)
+	}
+	entry.RepoURL = repoURL
+	entry.Package = packageName
+	entry.DevIncluded = devIncluded
+	return entry, true, nil
+}
+
+// InsertSolverMetadata stores or updates compact solver metadata for a package.
+func (c *Cache) InsertSolverMetadata(repoURL, packageName string, devIncluded bool, sourceETag, sourceHash string, schemaVer int, body []byte) error {
+	devFlag := 0
+	if devIncluded {
+		devFlag = 1
+	}
+	_, err := c.insertSolverStmt.Exec(repoURL, packageName, devFlag, sourceETag, sourceHash, schemaVer, body, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("cache: insert solver metadata %s %s dev=%t: %w", repoURL, packageName, devIncluded, err)
 	}
 	return nil
 }

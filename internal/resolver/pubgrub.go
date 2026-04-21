@@ -520,6 +520,7 @@ truncate:
 			version:   d.cand.version,
 			conflicts: d.cand.conflicts,
 			dev:       pg.pending[d.pkg].dev,
+			hydrated:  d.cand.hydrated,
 		}
 		pg.s.registerProviders(d.cand.entry)
 	}
@@ -746,6 +747,7 @@ func (pg *pubGrubSolver) decide(queue *[]string) (bool, string, string) {
 			version:   c.version,
 			conflicts: c.conflicts,
 			dev:       pg.pending[bestName].dev,
+			hydrated:  c.hydrated,
 		}
 		pg.s.registerProviders(c.entry)
 		*queue = append(*queue, bestName)
