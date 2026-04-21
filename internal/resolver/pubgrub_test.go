@@ -56,6 +56,16 @@ func TestPubGrubDecidePicksMostConstrainedPendingPackage(t *testing.T) {
 				cand("acme/b", "1.0.0"),
 			}},
 		},
+		heuristicCache: map[string]candidateCacheEntry{
+			"acme/a": {candidates: []candidate{
+				cand("acme/a", "3.0.0"),
+				cand("acme/a", "2.0.0"),
+				cand("acme/a", "1.0.0"),
+			}},
+			"acme/b": {candidates: []candidate{
+				cand("acme/b", "1.0.0"),
+			}},
+		},
 	}
 	pg := &pubGrubSolver{
 		r:               r,
@@ -78,6 +88,42 @@ func TestPubGrubDecidePicksMostConstrainedPendingPackage(t *testing.T) {
 	}
 	if got := pg.decisions[0].pkg; got != "acme/b" {
 		t.Fatalf("decided %s, want acme/b", got)
+	}
+}
+
+func TestRequirementScoreIgnoresSharedPrefetchCacheUntilSolverUsesPackage(t *testing.T) {
+	parse := func(raw string) version.Version {
+		t.Helper()
+		v, err := version.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse version %q: %v", raw, err)
+		}
+		return v
+	}
+
+	cand := candidate{
+		entry:   packagist.VersionEntry{Name: "acme/a", Version: "1.0.0"},
+		version: parse("1.0.0"),
+	}
+
+	r := &resolver{
+		ctx:              context.Background(),
+		minimumStability: version.Stable,
+		versionCache: map[string]candidateCacheEntry{
+			"acme/a": {candidates: []candidate{cand}},
+		},
+		heuristicCache: make(map[string]candidateCacheEntry),
+	}
+
+	scoreWithoutSolverTouch := r.requirementScore(newState(), requirement{name: "acme/a", root: true}, nil)
+	if scoreWithoutSolverTouch != 900 {
+		t.Fatalf("score without solver touch = %d, want 900", scoreWithoutSolverTouch)
+	}
+
+	r.heuristicSet("acme/a", candidateCacheEntry{candidates: []candidate{cand}})
+	scoreAfterSolverTouch := r.requirementScore(newState(), requirement{name: "acme/a", root: true}, nil)
+	if scoreAfterSolverTouch != 1 {
+		t.Fatalf("score after solver touch = %d, want 1", scoreAfterSolverTouch)
 	}
 }
 

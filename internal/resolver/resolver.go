@@ -132,6 +132,7 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 		rootConflicts:      buildRootConflicts(cj.Conflict),
 		versionCache:       versionCache,
 		versionCacheMu:     &versionCacheMu,
+		heuristicCache:     make(map[string]candidateCacheEntry, len(rootNames)*4),
 		progress:           deduped,
 		// solveProgress reports selected requirements during the backtracking phase.
 		solveProgress:        opts.SolveProgress,
@@ -338,6 +339,7 @@ type resolver struct {
 	restrictedPackages   map[string]struct{}
 	versionCache         map[string]candidateCacheEntry
 	versionCacheMu       *sync.RWMutex // shared with background prefetch goroutine
+	heuristicCache       map[string]candidateCacheEntry
 	lastConflict         *conflict
 	terminalErr          error
 	progress             func(string)
@@ -675,7 +677,7 @@ func (r *resolver) requirementScore(s *state, req requirement, pending []version
 	score -= len(pending) * 10
 	score -= len(s.constraints[req.name]) * 10
 
-	if cached, ok := r.cacheGet(req.name); ok {
+	if cached, ok := r.heuristicGet(req.name); ok {
 		if cached.err != nil {
 			return 0
 		}
@@ -758,6 +760,18 @@ func (r *resolver) cacheSet(name string, entry candidateCacheEntry) {
 	r.versionCache[name] = entry
 }
 
+func (r *resolver) heuristicGet(name string) (candidateCacheEntry, bool) {
+	entry, ok := r.heuristicCache[name]
+	return entry, ok
+}
+
+func (r *resolver) heuristicSet(name string, entry candidateCacheEntry) {
+	if r.heuristicCache == nil {
+		r.heuristicCache = make(map[string]candidateCacheEntry)
+	}
+	r.heuristicCache[name] = entry
+}
+
 func transitiveReqs(c candidate, dev bool) []requirement {
 	if len(c.dependencies) == 0 {
 		return nil
@@ -779,9 +793,11 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	includeDev := effectiveStability == version.Dev
 	if cached, ok := r.cacheGet(name); ok {
 		if cached.err != nil && (cached.hasDev || !includeDev) {
+			r.heuristicSet(name, cached)
 			return nil, cached.err
 		}
 		if cached.hasDev || !includeDev {
+			r.heuristicSet(name, cached)
 			// Filter by effective stability (which may differ from global minimumStability
 			// if the requirement has an @dev/@alpha/etc flag or is a dev-branch constraint).
 			filtered := filterByStability(cached.candidates, effectiveStability)
@@ -795,7 +811,9 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	candidates, err := r.fetchCandidates(name, includeDev)
 	if err != nil {
 		cachedErr := fmt.Errorf("resolver: fetch %s: %w", name, err)
-		r.cacheSet(name, candidateCacheEntry{err: cachedErr, hasDev: includeDev})
+		entry := candidateCacheEntry{err: cachedErr, hasDev: includeDev}
+		r.cacheSet(name, entry)
+		r.heuristicSet(name, entry)
 		return nil, cachedErr
 	}
 
@@ -803,7 +821,9 @@ func (r *resolver) getCandidates(name string, effectiveStability version.Stabili
 	sortCandidates(candidates, r.preferStable)
 
 	// Cache ALL versions (no stability filtering), then filter for this request.
-	r.cacheSet(name, candidateCacheEntry{candidates: candidates, hasDev: includeDev})
+	entry := candidateCacheEntry{candidates: candidates, hasDev: includeDev}
+	r.cacheSet(name, entry)
+	r.heuristicSet(name, entry)
 
 	filtered := filterByStability(candidates, effectiveStability)
 	return preferLocked(r.filterCandidates(name, filtered), r.locked[name]), nil
@@ -1358,6 +1378,12 @@ func parseDependencyRequirements(entry packagist.VersionEntry) []dependencyRequi
 		}
 		deps = append(deps, dependencyRequirement{name: name, constraint: c, raw: raw})
 	}
+	sort.Slice(deps, func(i, j int) bool {
+		if deps[i].name != deps[j].name {
+			return deps[i].name < deps[j].name
+		}
+		return deps[i].raw < deps[j].raw
+	})
 	return deps
 }
 
@@ -1373,6 +1399,12 @@ func parseConflictRequirements(entry packagist.VersionEntry) []dependencyRequire
 		}
 		conflicts = append(conflicts, dependencyRequirement{name: name, constraint: c, raw: raw})
 	}
+	sort.Slice(conflicts, func(i, j int) bool {
+		if conflicts[i].name != conflicts[j].name {
+			return conflicts[i].name < conflicts[j].name
+		}
+		return conflicts[i].raw < conflicts[j].raw
+	})
 	return conflicts
 }
 

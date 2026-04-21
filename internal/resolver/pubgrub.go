@@ -191,7 +191,13 @@ func (pg *pubGrubSolver) seedRootRequirements(reqs []requirement) {
 		// actually required. It should not make that package required by itself.
 	}
 
-	for name, c := range pg.r.rootConflicts {
+	rootConflictNames := make([]string, 0, len(pg.r.rootConflicts))
+	for name := range pg.r.rootConflicts {
+		rootConflictNames = append(rootConflictNames, name)
+	}
+	sort.Strings(rootConflictNames)
+	for _, name := range rootConflictNames {
+		c := pg.r.rootConflicts[name]
 		set := version.ConstraintVersionSet(c)
 		pg.addIncompatibility(&pgIncompatibility{
 			terms: []pgTerm{{pkg: name, set: set}},
@@ -849,10 +855,22 @@ func (pg *pubGrubSolver) emitCandidateIncompatibilities(name string, c candidate
 		pg.pending[virtual] = pgPendingMeta{}
 	}
 
+	providedNames := make([]string, 0, len(c.entry.Provide)+len(c.entry.Replace))
+	providedRaw := make(map[string]string, len(c.entry.Provide)+len(c.entry.Replace))
 	for virtual, raw := range c.entry.Provide {
-		addProvided(virtual, raw)
+		if _, seen := providedRaw[virtual]; !seen {
+			providedNames = append(providedNames, virtual)
+		}
+		providedRaw[virtual] = raw
 	}
 	for virtual, raw := range c.entry.Replace {
-		addProvided(virtual, raw)
+		if _, seen := providedRaw[virtual]; !seen {
+			providedNames = append(providedNames, virtual)
+		}
+		providedRaw[virtual] = raw
+	}
+	sort.Strings(providedNames)
+	for _, virtual := range providedNames {
+		addProvided(virtual, providedRaw[virtual])
 	}
 }
