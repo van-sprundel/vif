@@ -895,6 +895,7 @@ func TestChainReturnsOnFirstHitWithoutWaitingForCanceledSources(t *testing.T) {
 func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
 	publicResp := sampleResponse()
 	publicData, _ := json.Marshal(publicResp)
+	privateTraced := make(chan struct{})
 
 	privateSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -906,6 +907,7 @@ func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		<-privateTraced
 		_, _ = w.Write(publicData)
 	}))
 	defer publicSrv.Close()
@@ -918,6 +920,13 @@ func TestChainEmitsLookupTracePerRepositoryAttempt(t *testing.T) {
 	var traces []packagist.LookupTrace
 	chain.SetLookupTrace(func(trace packagist.LookupTrace) {
 		traces = append(traces, trace)
+		if trace.Source == privateSrv.URL && errors.Is(trace.Err, packagist.ErrPackageNotFound) {
+			select {
+			case <-privateTraced:
+			default:
+				close(privateTraced)
+			}
+		}
 	})
 
 	versions, err := chain.GetPackage(context.Background(), "acme/foo")
