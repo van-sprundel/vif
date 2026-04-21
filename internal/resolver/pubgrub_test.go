@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/van-sprundel/vif/internal/packagist"
+	"github.com/van-sprundel/vif/internal/platform"
 	"github.com/van-sprundel/vif/internal/version"
 )
 
@@ -124,6 +125,91 @@ func TestRequirementScoreIgnoresSharedPrefetchCacheUntilSolverUsesPackage(t *tes
 	scoreAfterSolverTouch := r.requirementScore(newState(), requirement{name: "acme/a", root: true}, nil)
 	if scoreAfterSolverTouch != 1 {
 		t.Fatalf("score after solver touch = %d, want 1", scoreAfterSolverTouch)
+	}
+}
+
+func TestPlatformRequirementSatisfiedCachesParsedInputs(t *testing.T) {
+	r := &resolver{
+		ctx:                     context.Background(),
+		platformOverrides:       map[string]string{"php": "8.2.12"},
+		platformConstraintCache: make(map[string]cachedConstraint),
+		platformVersionCache:    make(map[string]cachedVersion),
+	}
+
+	if !r.platformRequirementSatisfied("php", "^8.2") {
+		t.Fatal("expected override php requirement to match")
+	}
+	if got := len(r.platformConstraintCache); got != 1 {
+		t.Fatalf("constraint cache size after first check = %d, want 1", got)
+	}
+	if got := len(r.platformVersionCache); got != 1 {
+		t.Fatalf("version cache size after first check = %d, want 1", got)
+	}
+
+	if !r.platformRequirementSatisfied("php", "^8.2") {
+		t.Fatal("expected repeated override php requirement to match")
+	}
+	if got := len(r.platformConstraintCache); got != 1 {
+		t.Fatalf("constraint cache size after repeated check = %d, want 1", got)
+	}
+	if got := len(r.platformVersionCache); got != 1 {
+		t.Fatalf("version cache size after repeated check = %d, want 1", got)
+	}
+
+	r.platformOverrides = nil
+	r.detectedPlatform = &platform.Platform{PHPVersion: "8.2.12"}
+	r.platformDetectOnce.Do(func() {})
+
+	if !r.platformRequirementSatisfied("php", "^8.2") {
+		t.Fatal("expected detected php requirement to match")
+	}
+	if got := len(r.platformConstraintCache); got != 1 {
+		t.Fatalf("constraint cache size after detected platform check = %d, want 1", got)
+	}
+	if got := len(r.platformVersionCache); got != 1 {
+		t.Fatalf("version cache size after detected platform check = %d, want 1", got)
+	}
+}
+
+func TestBacktrackToTruncatesDecisionPrefix(t *testing.T) {
+	parse := func(raw string) version.Version {
+		t.Helper()
+		v, err := version.Parse(raw)
+		if err != nil {
+			t.Fatalf("parse version %q: %v", raw, err)
+		}
+		return v
+	}
+	cand := func(name, raw string) candidate {
+		return candidate{
+			entry:   packagist.VersionEntry{Name: name, Version: raw},
+			version: parse(raw),
+		}
+	}
+
+	pg := &pubGrubSolver{
+		r:               &resolver{minimumStability: version.Stable},
+		s:               newState(),
+		solution:        newPGPartialSolution(),
+		rootReqs:        []requirement{{name: "root/pkg"}},
+		minStabilityByP: make(map[string]version.Stability),
+	}
+	pg.decisions = []pgDecision{
+		{pkg: "acme/a", cand: cand("acme/a", "1.0.0"), level: 1},
+		{pkg: "acme/b", cand: cand("acme/b", "1.0.0"), level: 3},
+		{pkg: "acme/c", cand: cand("acme/c", "1.0.0"), level: 5},
+	}
+
+	pg.backtrackTo(3)
+
+	if got := len(pg.decisions); got != 2 {
+		t.Fatalf("decision count after backtrack = %d, want 2", got)
+	}
+	if got := pg.decisions[0].pkg; got != "acme/a" {
+		t.Fatalf("first kept decision = %q, want acme/a", got)
+	}
+	if got := pg.decisions[1].pkg; got != "acme/b" {
+		t.Fatalf("second kept decision = %q, want acme/b", got)
 	}
 }
 

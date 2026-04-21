@@ -115,25 +115,27 @@ func ResolveWithOptions(ctx context.Context, cj *composer.ComposerJSON, client p
 	}()
 
 	r := &resolver{
-		ctx:                ctx,
-		client:             client,
-		ignorePlatformReqs: opts.IgnorePlatformReqs,
-		minimumStability:   minimumStability,
-		preferStable:       cj.PreferStable,
-		platformOverrides:  cj.PlatformOverrides(),
-		platformDisabled:   cj.DisabledPlatformPackages(),
-		fixed:              opts.Fixed,
-		locked:             opts.Locked,
-		lockedEntries:      opts.LockedEntries,
-		rootProvide:        cj.Provide,
-		rootReplace:        cj.Replace,
-		rootConflict:       cj.Conflict,
-		rootSatisfiers:     buildRootSatisfiers(cj.Provide, cj.Replace),
-		rootConflicts:      buildRootConflicts(cj.Conflict),
-		versionCache:       versionCache,
-		versionCacheMu:     &versionCacheMu,
-		heuristicCache:     make(map[string]candidateCacheEntry, len(rootNames)*4),
-		progress:           deduped,
+		ctx:                     ctx,
+		client:                  client,
+		ignorePlatformReqs:      opts.IgnorePlatformReqs,
+		minimumStability:        minimumStability,
+		preferStable:            cj.PreferStable,
+		platformOverrides:       cj.PlatformOverrides(),
+		platformDisabled:        cj.DisabledPlatformPackages(),
+		fixed:                   opts.Fixed,
+		locked:                  opts.Locked,
+		lockedEntries:           opts.LockedEntries,
+		rootProvide:             cj.Provide,
+		rootReplace:             cj.Replace,
+		rootConflict:            cj.Conflict,
+		rootSatisfiers:          buildRootSatisfiers(cj.Provide, cj.Replace),
+		rootConflicts:           buildRootConflicts(cj.Conflict),
+		versionCache:            versionCache,
+		versionCacheMu:          &versionCacheMu,
+		heuristicCache:          make(map[string]candidateCacheEntry, len(rootNames)*4),
+		platformConstraintCache: make(map[string]cachedConstraint, 16),
+		platformVersionCache:    make(map[string]cachedVersion, 8),
+		progress:                deduped,
 		// solveProgress reports selected requirements during the backtracking phase.
 		solveProgress:        opts.SolveProgress,
 		providedVersionCache: make(map[string]providedVersion),
@@ -319,35 +321,37 @@ type conflict struct {
 }
 
 type resolver struct {
-	ctx                  context.Context
-	client               packagist.Fetcher
-	ignorePlatformReqs   bool
-	minimumStability     version.Stability
-	preferStable         bool
-	platformOverrides    map[string]string
-	platformDisabled     map[string]bool
-	fixed                map[string]string
-	locked               map[string]string
-	lockedEntries        map[string]packagist.VersionEntry
-	rootProvide          map[string]string
-	rootReplace          map[string]string
-	rootConflict         map[string]string
-	rootSatisfiers       map[string]rootSatisfier
-	rootConflicts        map[string]version.Constraint
-	restriction          version.Constraint
-	hasRestriction       bool
-	restrictedPackages   map[string]struct{}
-	versionCache         map[string]candidateCacheEntry
-	versionCacheMu       *sync.RWMutex // shared with background prefetch goroutine
-	heuristicCache       map[string]candidateCacheEntry
-	lastConflict         *conflict
-	terminalErr          error
-	progress             func(string)
-	solveProgress        func(string)
-	depth                int
-	providedVersionCache map[string]providedVersion
-	platformDetectOnce   sync.Once
-	detectedPlatform     *platform.Platform
+	ctx                     context.Context
+	client                  packagist.Fetcher
+	ignorePlatformReqs      bool
+	minimumStability        version.Stability
+	preferStable            bool
+	platformOverrides       map[string]string
+	platformDisabled        map[string]bool
+	fixed                   map[string]string
+	locked                  map[string]string
+	lockedEntries           map[string]packagist.VersionEntry
+	rootProvide             map[string]string
+	rootReplace             map[string]string
+	rootConflict            map[string]string
+	rootSatisfiers          map[string]rootSatisfier
+	rootConflicts           map[string]version.Constraint
+	restriction             version.Constraint
+	hasRestriction          bool
+	restrictedPackages      map[string]struct{}
+	versionCache            map[string]candidateCacheEntry
+	versionCacheMu          *sync.RWMutex // shared with background prefetch goroutine
+	heuristicCache          map[string]candidateCacheEntry
+	lastConflict            *conflict
+	terminalErr             error
+	progress                func(string)
+	solveProgress           func(string)
+	depth                   int
+	providedVersionCache    map[string]providedVersion
+	platformConstraintCache map[string]cachedConstraint
+	platformVersionCache    map[string]cachedVersion
+	platformDetectOnce      sync.Once
+	detectedPlatform        *platform.Platform
 }
 
 type rootSatisfier struct {
@@ -362,6 +366,16 @@ type providedVersion struct {
 	value    version.Version
 	hasSet   bool
 	set      version.VersionSet
+}
+
+type cachedConstraint struct {
+	constraint version.Constraint
+	ok         bool
+}
+
+type cachedVersion struct {
+	version version.Version
+	ok      bool
 }
 
 // recordConflict records a conflict, keeping the deepest (most specific) one.
@@ -772,6 +786,32 @@ func (r *resolver) heuristicSet(name string, entry candidateCacheEntry) {
 	r.heuristicCache[name] = entry
 }
 
+func (r *resolver) parsePlatformConstraint(raw string) (version.Constraint, bool) {
+	if r.platformConstraintCache == nil {
+		r.platformConstraintCache = make(map[string]cachedConstraint)
+	}
+	if cached, ok := r.platformConstraintCache[raw]; ok {
+		return cached.constraint, cached.ok
+	}
+	constraint, err := version.ParseConstraint(raw)
+	cached := cachedConstraint{constraint: constraint, ok: err == nil}
+	r.platformConstraintCache[raw] = cached
+	return cached.constraint, cached.ok
+}
+
+func (r *resolver) parsePlatformVersion(raw string) (version.Version, bool) {
+	if r.platformVersionCache == nil {
+		r.platformVersionCache = make(map[string]cachedVersion)
+	}
+	if cached, ok := r.platformVersionCache[raw]; ok {
+		return cached.version, cached.ok
+	}
+	v, err := version.Parse(raw)
+	cached := cachedVersion{version: v, ok: err == nil}
+	r.platformVersionCache[raw] = cached
+	return cached.version, cached.ok
+}
+
 func transitiveReqs(c candidate, dev bool) []requirement {
 	if len(c.dependencies) == 0 {
 		return nil
@@ -1019,13 +1059,13 @@ func (r *resolver) platformRequirementSatisfied(name, raw string) bool {
 			return true
 		}
 
-		constraint, err := version.ParseConstraint(raw)
-		if err != nil {
+		constraint, ok := r.parsePlatformConstraint(raw)
+		if !ok {
 			return true
 		}
 
-		v, err := version.Parse(override)
-		if err != nil {
+		v, ok := r.parsePlatformVersion(override)
+		if !ok {
 			return true
 		}
 
@@ -1043,12 +1083,12 @@ func (r *resolver) platformRequirementSatisfied(name, raw string) bool {
 		if raw == "" || raw == "*" {
 			return true
 		}
-		constraint, err := version.ParseConstraint(raw)
-		if err != nil {
+		constraint, ok := r.parsePlatformConstraint(raw)
+		if !ok {
 			return true
 		}
-		v, err := version.Parse(pf.PHPVersion)
-		if err != nil {
+		v, ok := r.parsePlatformVersion(pf.PHPVersion)
+		if !ok {
 			return true
 		}
 		return constraint.Matches(v)

@@ -495,13 +495,14 @@ truncate:
 	pg.solution.level = level
 
 	// Remove decisions above the target level.
-	kept := pg.decisions[:0]
-	for _, d := range pg.decisions {
-		if d.level <= level {
-			kept = append(kept, d)
+	decisionCutoff := len(pg.decisions)
+	for i, d := range pg.decisions {
+		if d.level > level {
+			decisionCutoff = i
+			break
 		}
 	}
-	pg.decisions = kept
+	pg.decisions = pg.decisions[:decisionCutoff]
 
 	// Rebuild allowed and decided from remaining assignments.
 	pg.solution.allowed = make(map[string]version.VersionSet)
