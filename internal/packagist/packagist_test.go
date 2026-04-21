@@ -838,6 +838,15 @@ func (f *hitThenMissFetcher) GetPackage(_ context.Context, _ string) ([]packagis
 	return nil, fmt.Errorf("%w: missing", packagist.ErrPackageNotFound)
 }
 
+type slowIgnoringCancelFetcher struct {
+	delay time.Duration
+}
+
+func (f slowIgnoringCancelFetcher) GetPackage(_ context.Context, _ string) ([]packagist.VersionEntry, error) {
+	time.Sleep(f.delay)
+	return nil, fmt.Errorf("%w: slow/miss", packagist.ErrPackageNotFound)
+}
+
 func TestChainProbeGatePreventsConcurrentMisses(t *testing.T) {
 	source := &countingNotFoundFetcher{delay: 50 * time.Millisecond}
 
@@ -859,6 +868,27 @@ func TestChainProbeGatePreventsConcurrentMisses(t *testing.T) {
 	// The others waited, saw the miss, and skipped.
 	if got := source.calls.Load(); got != 1 {
 		t.Fatalf("concurrent lookups: got %d calls, want 1", got)
+	}
+}
+
+func TestChainReturnsOnFirstHitWithoutWaitingForCanceledSources(t *testing.T) {
+	hitVersions := []packagist.VersionEntry{{Name: "acme/foo", Version: "1.0.0"}}
+	chain := packagist.NewChain(
+		slowIgnoringCancelFetcher{delay: 250 * time.Millisecond},
+		&hitThenMissFetcher{hitVersions: hitVersions},
+	)
+
+	start := time.Now()
+	versions, err := chain.GetPackage(context.Background(), "acme/foo")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("GetPackage: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Version != "1.0.0" {
+		t.Fatalf("unexpected versions: %+v", versions)
+	}
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("lookup took %s, expected early return before slow source finished", elapsed)
 	}
 }
 

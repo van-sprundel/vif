@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -193,22 +192,12 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 		}(j, cand)
 	}
 
-	// Collect results, returning early on the first hit.
-	var collected []result
-	var hitResult *result
+	// Return as soon as the first repository hits. Remaining goroutines may still
+	// finish in the background, but the buffered channel prevents them from
+	// blocking the caller once we've found the highest-priority successful source.
+	var errs []error
 	for range candidates {
 		r := <-ch
-		collected = append(collected, r)
-		if r.err == nil && hitResult == nil {
-			hitResult = &r
-			// Cancel remaining lookups — we have our answer.
-			lookupCancel()
-		}
-	}
-
-	// Emit traces in source-priority order (by idx) for deterministic output.
-	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
-	for _, r := range collected {
 		if c.trace != nil && r.duration > 0 {
 			c.trace(LookupTrace{
 				Source:   repositoryLabel(r.source),
@@ -217,21 +206,22 @@ func (c *Chain) GetPackageWithDev(ctx context.Context, name string, includeDev b
 				Err:      r.err,
 			})
 		}
-	}
-
-	if hitResult != nil {
-		return hitResult.versions, nil
+		if r.err == nil {
+			lookupCancel()
+			return r.versions, nil
+		}
+		errs = append(errs, r.err)
 	}
 
 	// No hit — classify errors.
 	var lastNotFound, lastAuthErr, lastTransientErr error
-	for _, r := range collected {
-		if errors.Is(r.err, ErrPackageNotFound) {
-			lastNotFound = r.err
-		} else if errors.Is(r.err, ErrAuthRequired) {
-			lastAuthErr = r.err
-		} else if isTransientRepositoryError(r.err) {
-			lastTransientErr = r.err
+	for _, err := range errs {
+		if errors.Is(err, ErrPackageNotFound) {
+			lastNotFound = err
+		} else if errors.Is(err, ErrAuthRequired) {
+			lastAuthErr = err
+		} else if isTransientRepositoryError(err) {
+			lastTransientErr = err
 		}
 	}
 
@@ -307,19 +297,9 @@ func (c *Chain) GetSolverPackage(ctx context.Context, name string, includeDev bo
 		}(cand)
 	}
 
-	var collected []result
-	var hitResult *result
+	var errs []error
 	for range candidates {
 		r := <-ch
-		collected = append(collected, r)
-		if r.err == nil && hitResult == nil {
-			hitResult = &r
-			lookupCancel()
-		}
-	}
-
-	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
-	for _, r := range collected {
 		if c.trace != nil && r.duration > 0 {
 			c.trace(LookupTrace{
 				Source:   repositoryLabel(r.source),
@@ -328,12 +308,10 @@ func (c *Chain) GetSolverPackage(ctx context.Context, name string, includeDev bo
 				Err:      r.err,
 			})
 		}
-	}
-	if hitResult != nil {
-		return hitResult.record, nil
-	}
-	errs := make([]error, 0, len(collected))
-	for _, r := range collected {
+		if r.err == nil {
+			lookupCancel()
+			return r.record, nil
+		}
 		errs = append(errs, r.err)
 	}
 	return SolverPackageRecord{}, classifyLookupErrors(errs, name)
@@ -399,19 +377,9 @@ func (c *Chain) GetPackageVersion(ctx context.Context, name, selectedVersion str
 		}(cand)
 	}
 
-	var collected []result
-	var hitResult *result
+	var errs []error
 	for range candidates {
 		r := <-ch
-		collected = append(collected, r)
-		if r.err == nil && hitResult == nil {
-			hitResult = &r
-			lookupCancel()
-		}
-	}
-
-	sort.Slice(collected, func(i, j int) bool { return collected[i].idx < collected[j].idx })
-	for _, r := range collected {
 		if c.trace != nil && r.duration > 0 {
 			c.trace(LookupTrace{
 				Source:   repositoryLabel(r.source),
@@ -420,12 +388,10 @@ func (c *Chain) GetPackageVersion(ctx context.Context, name, selectedVersion str
 				Err:      r.err,
 			})
 		}
-	}
-	if hitResult != nil {
-		return hitResult.entry, nil
-	}
-	errs := make([]error, 0, len(collected))
-	for _, r := range collected {
+		if r.err == nil {
+			lookupCancel()
+			return r.entry, nil
+		}
 		errs = append(errs, r.err)
 	}
 	return VersionEntry{}, classifyLookupErrors(errs, name)
